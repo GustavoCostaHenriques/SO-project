@@ -268,48 +268,54 @@ int parse_wait(int fd, unsigned int *delay, unsigned int *thread_id) {
 }
 
 void build_string(int output_fd, const char **strings, int n_strings) {
-    size_t total_length = 0;
-    size_t acumulator = 0;
-    for (int i = 0; i < n_strings; ++i) {
-        total_length += strlen(strings[i]);
-    }
-    total_length += (size_t) n_strings; // Count spaces between strings plus the \n 
+  size_t total_length = 0;
+  size_t acumulator = 0;
+  // Calculation of the total length of the string to write in the file with the file descriptor output_fd.
+  for (int i = 0; i < n_strings; ++i) {
+    total_length += strlen(strings[i]);
+  }
+  total_length += (size_t) n_strings; // Count spaces between strings plus the \n.
 
-    char *result = (char *)malloc(total_length * sizeof(char));
-    if (result == NULL) {
-        write(output_fd, "Error allocating memory\n", 25);
-        exit(EXIT_FAILURE);
-    }
+  // Alocation of the string.
+  char *result = (char *)malloc(total_length * sizeof(char));
+  if (result == NULL) {
+    write(output_fd, "Error allocating memory\n", 25);
+    exit(EXIT_FAILURE);
+  }
 
-    for (int i = 0; i < n_strings; ++i) {
-        memcpy(result+acumulator, strings[i], strlen(strings[i]));
-        acumulator += strlen(strings[i]);
-    }
 
-    memcpy(result+acumulator, "\n", 1);
-    write(output_fd, result, acumulator);
+  // Fill the result string with the provided strings.
+  for (int i = 0; i < n_strings; ++i) {
+    memcpy(result+acumulator, strings[i], strlen(strings[i]));
+    acumulator += strlen(strings[i]);
+  }
 
-    free(result);
+  memcpy(result+acumulator, "\n", 1);
+  // Write the result string to the file using the file descriptor output_fd.
+  write(output_fd, result, acumulator);
+
+  // Free the memory allocated for the result string.
+  free(result);
 }
 
 void int_to_str(unsigned int value, char *str) {
-        // Lidar com caso especial de zero
-    if (value == 0) {
-        str[0] = '0';
-        str[1] = '\0';
-        return;
-    }
+  // Dealing with the special case zero.
+  if (value == 0) {
+      str[0] = '0';
+      str[1] = '\0';
+      return;
+  }
 
-    // Converter cada dígito individual
-    int index = 0;
-    while (value > 0) {
-        // Usar unsigned int para evitar warnings de conversão de sinal
-        unsigned int digit = value % 10;
-        str[index++] = (char)(digit + '0');
-        value /= 10;
-    }
+  // Convertion of each individual digit.
+  int index = 0;
+  while (value > 0) {
+    // Use of unsigned int to avoid signal conversion warnings.
+    unsigned int digit = value % 10;
+    str[index++] = (char)(digit + '0');
+    value /= 10;
+  }
 
-    // Inverter a string
+    // Invertion of a string.
     int start = 0;
     int end = index - 1;
     while (start < end) {
@@ -320,196 +326,262 @@ void int_to_str(unsigned int value, char *str) {
         end--;
     }
 
-    // Adicionar terminador nulo
+    // Add null terminator.
     str[index] = '\0';
 }
 
+size_t count_files(const char *directory){
+  DIR *dir;
+  size_t number_of_files = 0;
+
+  // Open the directory.
+  dir = opendir(directory);
+  if (dir == NULL) {
+      perror("Error opening directory");
+      exit(EXIT_FAILURE);
+  }
+
+  struct dirent *entry;
+  // Process each entry in the directory.
+  while ((entry = readdir(dir)) != NULL) {
+    char filename[256];  
+    // Construct the full path for the current file.
+    strcpy(filename, directory);
+    strcat(filename, "/");
+    strcat(filename, entry->d_name);
+    struct stat file_stat;
+    // Retrieve file information
+    if (stat(filename, &file_stat) == 0 && S_ISREG(file_stat.st_mode)) {
+      // Check if it is a regular file and if the extension is .jobs.
+      if (strcmp(strrchr(entry->d_name, '.'), ".jobs") == 0) 
+        number_of_files++;
+    }
+  }
+
+  // Close the directory.
+  closedir(dir);
+  return number_of_files;
+}
+
+void init_pid_list(PIDList *list, size_t capacity) {
+  list->pids = malloc(capacity * sizeof(pid_t));
+  list->size = 0;
+  list->capacity = capacity;
+}
+
+void add_pid(PIDList *list, pid_t pid) {
+  if (list->size == list->capacity) {
+      list->capacity *= 2;
+      list->pids = realloc(list->pids, list->capacity * sizeof(pid_t));
+  }
+  list->pids[list->size++] = pid;
+}
+
+void remove_pid(PIDList *list, pid_t pid) {
+  for (size_t i = 0; i < list->size; i++) {
+    if (list->pids[i] == pid) {
+      // Move os elementos restantes para preencher a lacuna
+      for (size_t j = i; j < list->size - 1; j++) {
+        list->pids[j] = list->pids[j + 1];
+      }
+      list->size--;
+      return;  // Não é mais necessário continuar o loop, pois encontramos e removemos o PID
+    }
+  }
+}
+
+void free_pid_list(PIDList *list) {
+  free(list->pids);
+  list->size = 0;
+  list->capacity = 0;
+}
+
 void process_jobs_directory(const char *directory, int max_processes, unsigned int delay_ms) {
-    DIR *dir;
+  DIR *dir;
 
-    // Abre o diretório
-    dir = opendir(directory);
-    if (dir == NULL) {
-        perror("Error opening directory");
-        exit(EXIT_FAILURE);
-    }
+  // Abre o diretório
+  dir = opendir(directory);
+  if (dir == NULL) {
+      perror("Error opening directory");
+      exit(EXIT_FAILURE);
+  }
 
-    struct dirent *entry;
-    int active_children = 0;
-    // Lista para armazenar os PIDs dos processos filhos
-    pid_t child_pids[max_processes];
+  struct dirent *entry;
+  size_t number_of_files;
+  number_of_files = count_files(directory);
+  // Lista para armazenar os PIDs dos processos filhos
+  PIDList active_children;
+  init_pid_list(&active_children, number_of_files);
 
-    // Processa cada entrada no diretório
-    while ((entry = readdir(dir)) != NULL) {
-        char filename[256];  // Ajuste o tamanho conforme necessário
-        // TODO: tentar pôr as 3 linhas abaixo no build_string
-        strcpy(filename, directory);
-        strcat(filename, "/");
-        strcat(filename, entry->d_name);
-        struct stat file_stat;
-        if (stat(filename, &file_stat) == 0 && S_ISREG(file_stat.st_mode)) {
-            // Verifica se é um arquivo regular e se a extensão é .jobs
-            if (strcmp(strrchr(entry->d_name, '.'), ".jobs") == 0) {
-                // Processa o arquivo em paralelo
-                if (active_children < max_processes) {
-                    // Cria um novo processo filho para processar o arquivo
-                    int fd = open(filename, O_RDONLY);
-                    if (fd == -1) {
-                        perror("Error opening file");
-                        exit(EXIT_FAILURE);
-                    }
+  // Processa cada entrada no diretório
+  while ((entry = readdir(dir)) != NULL) {
+    char filename[256];  
+    strcpy(filename, directory);
+    strcat(filename, "/");
+    strcat(filename, entry->d_name);
+    struct stat file_stat;
+    if (stat(filename, &file_stat) == 0 && S_ISREG(file_stat.st_mode)) {
+      // Verifica se é um arquivo regular e se a extensão é .jobs
+      if (strcmp(strrchr(entry->d_name, '.'), ".jobs") == 0) {
+        // Processa o arquivo em paralelo
+        if (active_children.size < (size_t)max_processes) {
+          // Cria um novo processo filho para processar o arquivo
+          int fd = open(filename, O_RDONLY);
+          if (fd == -1) {
+            perror("Error opening file");
+            exit(EXIT_FAILURE);
+          }
 
-                    // Creation of the file ".out"
-                    size_t filename_len = strlen(filename);
-                    char *out_filename = malloc(filename_len + 5);  // ".out" has 4 characters plus one for '/' and another for '\0'
-                    if (out_filename == NULL) {
-                        perror("Error allocating memory for output filename");
-                        close(fd);
-                        exit(EXIT_FAILURE);
-                    }
+          // Creation of the file ".out"
+          size_t filename_len = strlen(filename);
+          char *out_filename = malloc(filename_len + 5);  // ".out" has 4 characters plus one for '/' and another for '\0'
+          if (out_filename == NULL) {
+            perror("Error allocating memory for output filename");
+            close(fd);
+            exit(EXIT_FAILURE);
+          }
 
-                    const char *dot = strrchr(filename, '.');
+          const char *dot = strrchr(filename, '.');
 
-                    if (dot != NULL) {
-                        // Se houver um ponto, copiar o nome do arquivo até o ponto para out_filename
-                        size_t prefix_len = strlen(filename) - strlen(dot);
-                        strncpy(out_filename, filename, prefix_len);
-                        out_filename[prefix_len] = '\0';
-                    } else {
-                        // Se não houver ponto, copiar o nome do arquivo inteiro para out_filename
-                        strcpy(out_filename, filename);
-                    }
+          if (dot != NULL) {
+            // Se houver um ponto, copiar o nome do arquivo até o ponto para out_filename
+            size_t prefix_len = strlen(filename) - strlen(dot);
+            strncpy(out_filename, filename, prefix_len);
+            out_filename[prefix_len] = '\0';
+          } else {
+            // Se não houver ponto, copiar o nome do arquivo inteiro para out_filename
+            strcpy(out_filename, filename);
+          }
 
-                    // Adicionar a extensão ".out"
-                    strcat(out_filename, ".out");
+          // Adicionar a extensão ".out"
+          strcat(out_filename, ".out");
 
-                    int out_fd = open(out_filename, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-                    if (out_fd == -1) {
-                        free(out_filename);
-                        perror("Error creating output file");
-                        close(fd);
-                        exit(EXIT_FAILURE);
-                    }
-                    pid_t pid = fork();
-                    if (pid == -1) {
-                        perror("Error forking process");
-                        free(out_filename);
-                        closedir(dir);
-                        exit(EXIT_FAILURE);
-                    } else if (pid == 0) {
-                        // Código do processo filho
-                        //if(!strcmp(out_filename, "jobs/b.out"))
-                          //sleep(5);
-                        if (ems_init(out_fd, delay_ms)) {
-                            write(out_fd, "Failed to initialize EMS\n", 25);
-                            free(out_filename);
-                            close(fd);
-                            close(out_fd);
-                            exit(EXIT_FAILURE);
-                        }
-                        ems_process_command(fd, out_fd);
-                        free(out_filename);
-                        close(fd);
-                        close(out_fd);
-                        exit(EXIT_SUCCESS);
-                    } else {
-                        free(out_filename);
-                        close(fd);
-                        close(out_fd);
-                        active_children++;
-                        // Armazena o PID do processo filho na lista
-                        child_pids[active_children - 1] = pid;
-                    }
-                } 
-                else {
-                    // Espera pelo menos um processo filho terminar antes de iniciar um novo
-                    int status;
-                    pid_t child_pid = waitpid(-1, &status, 0);
-                    if (WIFEXITED(status)) {
-                        printf("Processo filho %d terminou normalmente com código de saída %d\n", child_pid, WEXITSTATUS(status));
-                    } else if (WIFSIGNALED(status)) {
-                        printf("Processo filho %d terminou devido a um sinal com código %d\n", child_pid, WTERMSIG(status));
-                    }
-                    active_children--;
-
-                    // Substitui o PID do processo filho que terminou com o novo processo filho
-                    int fd = open(filename, O_RDONLY);
-                    if (fd == -1) {
-                        perror("Error opening file");
-                        exit(EXIT_FAILURE);
-                    }
-
-                    size_t filename_len = strlen(filename);
-                    char *out_filename = malloc(filename_len + 5);
-                    if (out_filename == NULL) {
-                        perror("Error allocating memory for output filename");
-                        close(fd);
-                        exit(EXIT_FAILURE);
-                    }
-
-                    const char *dot = strrchr(filename, '.');
-
-                    if (dot != NULL) {
-                        size_t prefix_len = strlen(filename) - strlen(dot);
-                        strncpy(out_filename, filename, prefix_len);
-                        out_filename[prefix_len] = '\0';
-                    } else {
-                        strcpy(out_filename, filename);
-                    }
-
-                    strcat(out_filename, ".out");
-
-                    int out_fd = open(out_filename, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-                    if (out_fd == -1) {
-                        free(out_filename);
-                        perror("Error creating output file");
-                        close(fd);
-                        exit(EXIT_FAILURE);
-                    }
-
-                    pid_t pid = fork();
-                    if (pid == -1) {
-                        perror("Error forking process");
-                        free(out_filename);
-                        closedir(dir);
-                        exit(EXIT_FAILURE);
-                    } else if (pid == 0) {
-                        if (ems_init(out_fd, delay_ms)) {
-                            write(out_fd, "Failed to initialize EMS\n", 25);
-                            free(out_filename);
-                            close(fd);
-                            close(out_fd);
-                            exit(EXIT_FAILURE);
-                        }
-                        ems_process_command(fd, out_fd);
-                        free(out_filename);
-                        close(fd);
-                        close(out_fd);
-                        exit(EXIT_SUCCESS);
-                    } else {
-                        free(out_filename);
-                        close(fd);
-                        close(out_fd);
-                        active_children++;
-                        // Armazena o PID do novo processo filho na lista
-                        child_pids[active_children - 1] = pid;
-                    }
-                }
+          int out_fd = open(out_filename, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+          if (out_fd == -1) {
+            free(out_filename);
+            perror("Error creating output file");
+            close(fd);
+            exit(EXIT_FAILURE);
+          }
+          pid_t pid = fork();
+          if (pid == -1) {
+            perror("Error forking process");
+            free(out_filename);
+            free_pid_list(&active_children);
+            closedir(dir);
+            exit(EXIT_FAILURE);
+          } else if (pid == 0) {
+            if (ems_init(out_fd, delay_ms)) {
+              write(out_fd, "Failed to initialize EMS\n", 25);
+              free(out_filename);
+              close(fd);
+              close(out_fd);
+              exit(EXIT_FAILURE);
             }
-        }
-    }
-
-    // Espera pelos processos filhos restantes
-    for (int i = 0; i < max_processes; i++) {
-        int status;
-        pid_t child_pid = waitpid(child_pids[i], &status, 0);
-        if (WIFEXITED(status)) {
+            ems_process_command(fd, out_fd);
+            free(out_filename);
+            close(fd);
+            close(out_fd);
+            exit(EXIT_SUCCESS);
+          } else {
+            free(out_filename);
+            close(fd);
+            close(out_fd);
+            // Armazena o PID do processo filho na lista
+            add_pid(&active_children, pid);
+          }
+        } 
+        else {
+          // Espera pelo menos um processo filho terminar antes de iniciar um novo
+          int status;
+          pid_t child_pid = waitpid(-1, &status, 0);
+          if (WIFEXITED(status)) {
             printf("Processo filho %d terminou normalmente com código de saída %d\n", child_pid, WEXITSTATUS(status));
-        } else if (WIFSIGNALED(status)) {
-          printf("Processo filho %d terminou devido a um sinal com código %d\n", child_pid, WTERMSIG(status));
+          } else if (WIFSIGNALED(status)) {
+            printf("Processo filho %d terminou devido a um sinal com código %d\n", child_pid, WTERMSIG(status));
+          }
+          remove_pid(&active_children, child_pid);
+
+          // Substitui o PID do processo filho que terminou com o novo processo filho
+          int fd = open(filename, O_RDONLY);
+          if (fd == -1) {
+            perror("Error opening file");
+            exit(EXIT_FAILURE);
+          }
+
+          size_t filename_len = strlen(filename);
+          char *out_filename = malloc(filename_len + 5);
+          if (out_filename == NULL) {
+            perror("Error allocating memory for output filename");
+            close(fd);
+            exit(EXIT_FAILURE);
+          }
+
+          const char *dot = strrchr(filename, '.');
+
+          if (dot != NULL) {
+            size_t prefix_len = strlen(filename) - strlen(dot);
+            strncpy(out_filename, filename, prefix_len);
+            out_filename[prefix_len] = '\0';
+          } else {
+            strcpy(out_filename, filename);
+          }
+
+          strcat(out_filename, ".out");
+
+          int out_fd = open(out_filename, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+          if (out_fd == -1) {
+            free(out_filename);
+            perror("Error creating output file");
+            close(fd);
+            exit(EXIT_FAILURE);
+          }
+
+          pid_t pid = fork();
+          if (pid == -1) {
+            perror("Error forking process");
+            free(out_filename);
+            free_pid_list(&active_children);
+            closedir(dir);
+            exit(EXIT_FAILURE);
+          } else if (pid == 0) {
+            if (ems_init(out_fd, delay_ms)) {
+              write(out_fd, "Failed to initialize EMS\n", 25);
+              free(out_filename);
+              close(fd);
+              close(out_fd);
+              exit(EXIT_FAILURE);
+            }
+            ems_process_command(fd, out_fd);
+            free(out_filename);
+            close(fd);
+            close(out_fd);
+            exit(EXIT_SUCCESS);
+          } else {
+            free(out_filename);
+            close(fd);
+            close(out_fd);
+            // Armazena o PID do novo processo filho na lista
+            add_pid(&active_children, pid);
+          }
         }
-        active_children--;
+      }
     }
-    // Fecha o diretório
-    closedir(dir);
+  }
+
+  // Espera pelos processos filhos restantes
+  for (size_t i = 0; i < (size_t)max_processes; i++) {
+    int status;
+    if(i >= number_of_files) break;
+    pid_t child_pid = waitpid(-1, &status, 0);
+    if (WIFEXITED(status)) {
+        printf("Processo filho %d terminou normalmente com código de saída %d\n", child_pid, WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+      printf("Processo filho %d terminou devido a um sinal com código %d\n", child_pid, WTERMSIG(status));
+    }
+    remove_pid(&active_children, child_pid);
+  }
+  free_pid_list(&active_children);
+  // Fecha o diretório
+  closedir(dir);
 }

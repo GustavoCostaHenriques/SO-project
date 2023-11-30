@@ -41,7 +41,6 @@ int main(int argc, char *argv[]) {
 
   char *jobs_directory = "jobs";
 
-
   process_jobs_directory(jobs_directory, max_processes, state_access_delay_ms);
 
   return 0;

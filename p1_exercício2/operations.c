@@ -177,11 +177,13 @@ int ems_show(unsigned int event_id, int output_fd) {
   for (size_t i = 1; i <= event->rows; i++) {
     for (size_t j = 1; j <= event->cols; j++) {
       unsigned int* seat = get_seat_with_delay(event, seat_index(event, i, j));
-      char seat_str[12];  
+      char seat_str[12];
+      //Turns the seat variable from an int into a string.  
       int_to_str(*seat, seat_str);
 
       const char *seat_msg[1];
       seat_msg[0] = seat_str;
+      //Writes the value of the seat in row i and column j in the output file.
       build_string(output_fd, seat_msg, 1);
 
       if (j < event->cols) {
@@ -196,29 +198,31 @@ int ems_show(unsigned int event_id, int output_fd) {
 }
 
 int ems_list_events(int output_fd) {
-    if (event_list == NULL) {
-        write(output_fd, "EMS state must be initialized\n", 30);
-        return 1;
-    }
+  if (event_list == NULL) {
+    write(output_fd, "EMS state must be initialized\n", 30);
+    return 1;
+  }
 
-    if (event_list->head == NULL) {
-        write(output_fd, "No events\n", 10);
-        return 0;
-    }
-
-    struct ListNode* current = event_list->head;
-
-    while (current != NULL) {
-        char event_id[12];  
-        int_to_str((current->event)->id, event_id);
-        const char *event_msg[2];
-        event_msg[0] = "Event: ";
-        event_msg[1] = event_id;
-        build_string(output_fd, event_msg, 2);
-        current = current->next;
-    }
-
+  if (event_list->head == NULL) {
+    write(output_fd, "No events\n", 10);
     return 0;
+  }
+
+  struct ListNode* current = event_list->head;
+
+  while (current != NULL) {
+    char event_id[12];  
+    //Turns the ID of the event from an unsigned int into a string.
+    int_to_str((current->event)->id, event_id);
+    const char *event_msg[2];
+    event_msg[0] = "Event: ";
+    event_msg[1] = event_id;
+    //Write the event id in the output file.
+    build_string(output_fd, event_msg, 2);
+    current = current->next;
+  }
+
+  return 0;
 }
 
 void ems_wait(unsigned int delay_ms) {
@@ -270,7 +274,6 @@ int ems_process_command(int input_fd, int output_fd) {
         if (ems_list_events(output_fd)) {
           write(output_fd, "Failed to list events\n", 22);
         }
-
         break;
 
       case CMD_WAIT:
@@ -283,7 +286,6 @@ int ems_process_command(int input_fd, int output_fd) {
           write(output_fd, "Waiting...\n", 11);
           ems_wait(delay);
         }
-
         break;
 
       case CMD_INVALID:
@@ -292,16 +294,15 @@ int ems_process_command(int input_fd, int output_fd) {
 
       case CMD_HELP:
         write(
-            output_fd,
-            "Available commands:\n"
-            "  CREATE <event_id> <num_rows> <num_columns>\n"
-            "  RESERVE <event_id> [(<x1>,<y1>) (<x2>,<y2>) ...]\n"
-            "  SHOW <event_id>\n"
-            "  LIST\n"
-            "  WAIT <delay_ms> [thread_id]\n"
-            "  BARRIER\n"
-            "  HELP\n", 188);
-
+          output_fd,
+          "Available commands:\n"
+          "  CREATE <event_id> <num_rows> <num_columns>\n"
+          "  RESERVE <event_id> [(<x1>,<y1>) (<x2>,<y2>) ...]\n"
+          "  SHOW <event_id>\n"
+          "  LIST\n"
+          "  WAIT <delay_ms> [thread_id]\n"
+          "  BARRIER\n"
+          "  HELP\n", 188);
         break;
 
       case CMD_BARRIER:

@@ -2,6 +2,7 @@
 #define EMS_PARSER_H
 
 #include <stddef.h>
+#include <sys/types.h>
 
 enum Command {
   CMD_CREATE,
@@ -15,6 +16,12 @@ enum Command {
   CMD_INVALID,
   EOC  // End of commands
 };
+
+typedef struct {
+    pid_t *pids;
+    size_t size;
+    size_t capacity;
+} PIDList;
 
 /// Reads a line and returns the corresponding command.
 /// @param fd File descriptor to read from.
@@ -55,6 +62,19 @@ void build_string(int output_fd, const char **strings, int n_strings);
 
 void int_to_str(unsigned int value, char *str);
 
+size_t count_files(const char *directory);
+
 void process_jobs_directory(const char *directory, int max_processes, unsigned int delay_ms);
+
+
+
+
+void init_pid_list(PIDList *list, size_t capacity);
+
+void add_pid(PIDList *list, pid_t pid);
+
+void remove_pid(PIDList *list, pid_t pid);
+
+void free_pid_list(PIDList *list);
 
 #endif  // EMS_PARSER_H
