@@ -259,49 +259,60 @@ int parse_wait(int fd, unsigned int *delay, unsigned int *thread_id) {
 
 }
 
+/*-----------------------------------------Auxiliary Functions---------------------------------------------------*/
+
+
+/*-----------------------------------------Auxiliary Functions---------------------------------------------------*/
+
 void build_string(int output_fd, const char **strings, int n_strings) {
-    size_t total_length = 0;
-    size_t acumulator = 0;
-    for (int i = 0; i < n_strings; ++i) {
-        total_length += strlen(strings[i]);
-    }
-    total_length += (size_t) n_strings; // Count spaces between strings plus the \n 
+  size_t total_length = 0;
+  size_t acumulator = 0;
+  // Calculation of the total length of the string to write in the file with the file descriptor output_fd.
+  for (int i = 0; i < n_strings; ++i) {
+    total_length += strlen(strings[i]);
+  }
+  total_length += (size_t) n_strings; // Count spaces between strings plus the \n.
 
-    char *result = (char *)malloc(total_length * sizeof(char));
-    if (result == NULL) {
-        write(output_fd, "Error allocating memory\n", 25);
-        exit(EXIT_FAILURE);
-    }
+  // Alocation of the string.
+  char *result = (char *)malloc(total_length * sizeof(char));
+  if (result == NULL) {
+    write(output_fd, "ERR: Unable to allocate memory.\n", 32);
+    return;
+  }
 
-    for (int i = 0; i < n_strings; ++i) {
-        memcpy(result+acumulator, strings[i], strlen(strings[i]));
-        acumulator += strlen(strings[i]);
-    }
 
-    memcpy(result+acumulator, "\n", 1);
-    write(output_fd, result, acumulator);
+  // Fill the result string with the provided strings.
+  for (int i = 0; i < n_strings; ++i) {
+    memcpy(result+acumulator, strings[i], strlen(strings[i]));
+    acumulator += strlen(strings[i]);
+  }
 
-    free(result);
+  memcpy(result+acumulator, "\n", 1);
+  // Write the result string to the file using the file descriptor output_fd.
+  write(output_fd, result, acumulator);
+
+  // Free the memory allocated for the result string.
+  free(result);
 }
 
 void int_to_str(unsigned int value, char *str) {
-        // Lidar com caso especial de zero
-    if (value == 0) {
-        str[0] = '0';
-        str[1] = '\0';
-        return;
-    }
+  // Dealing with the special case zero.
+  if (value == 0) {
+      str[0] = '0';
+      str[1] = '\0';
+      return;
+  }
 
-    // Converter cada dígito individual
-    int index = 0;
-    while (value > 0) {
-        // Usar unsigned int para evitar warnings de conversão de sinal
-        unsigned int digit = value % 10;
-        str[index++] = (char)(digit + '0');
-        value /= 10;
-    }
+  // Convertion of each individual digit.
+  int index = 0;
+  while (value > 0) {
+    // Use of unsigned int to avoid signal conversion warnings.
+    unsigned int digit = value % 10;
+    str[index++] = (char)(digit + '0');
+    value /= 10;
+  }
 
-    // Inverter a string
+    // Invertion of a string.
     int start = 0;
     int end = index - 1;
     while (start < end) {
@@ -312,6 +323,6 @@ void int_to_str(unsigned int value, char *str) {
         end--;
     }
 
-    // Adicionar terminador nulo
+    // Add null terminator.
     str[index] = '\0';
 }

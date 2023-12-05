@@ -39,6 +39,10 @@ int ems_list_events(int output_fd);
 /// @param delay_us Delay in milliseconds.
 void ems_wait(unsigned int delay_ms);
 
+/// Processes all the comands that exist in the input file
+/// to the output file.
+/// @param input_fd File descriptor of the input file.
+/// @param output_fd File descriptor of the output file.
 int ems_process_command(int input_fd, int output_fd);
 
 #endif  // EMS_OPERATIONS_H

@@ -51,8 +51,17 @@ int parse_show(int fd, unsigned int *event_id);
 /// @return 0 if no thread was specified, 1 if a thread was specified, -1 on error.
 int parse_wait(int fd, unsigned int *delay, unsigned int *thread_id);
 
+// Auxiliary functions.
+
+/// Build a string from an array of strings and write it to a file.
+/// @param output_fd File descriptor to write to.
+/// @param strings Array of strings to build the string.
+/// @param n_strings Number of strings in the array.
 void build_string(int output_fd, const char **strings, int n_strings);
 
+/// Convert an unsigned integer value to a string.
+/// @param value Unsigned integer value to be converted.
+/// @param str Pointer to the resulting string.
 void int_to_str(unsigned int value, char *str);
 
 #endif  // EMS_PARSER_H

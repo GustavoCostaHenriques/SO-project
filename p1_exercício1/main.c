@@ -17,7 +17,7 @@ int main(int argc, char *argv[]) {
 
   if (argc > 2) {
     char *endptr;
-    unsigned long int delay = strtoul(argv[1], &endptr, 10);
+    unsigned long int delay = strtoul(argv[2], &endptr, 10);
 
     if (*endptr != '\0' || delay > UINT_MAX) {
       fprintf(stderr, "Invalid delay value or value too large\n");
@@ -27,13 +27,11 @@ int main(int argc, char *argv[]) {
     state_access_delay_ms = (unsigned int)delay;
   }
 
-  
-
-  char *jobs_directory = "jobs";
+  char *jobs_directory = argv[1];
 
   DIR *dir = opendir(jobs_directory);
   if (!dir) {
-    fprintf(stderr, "Failed to open JOBS directory");
+    fprintf(stderr, "Failed to open %s directory", jobs_directory);
     return 1;
   }
 
@@ -66,6 +64,7 @@ int main(int argc, char *argv[]) {
 
       int input_fd = open(input_path, O_RDONLY);
       int output_fd = open(output_path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+
 
       if (ems_init(output_fd, state_access_delay_ms)) {
         write(output_fd, "Failed to initialize EMS\n", 25);
