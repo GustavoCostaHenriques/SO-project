@@ -11,8 +11,8 @@
 
 static struct EventList* event_list = NULL;
 static unsigned int state_access_delay_ms = 0;
-static pthread_mutex_t ems_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_rwlock_t rw_mutex = PTHREAD_RWLOCK_INITIALIZER;
+static pthread_rwlock_t init_mutex = PTHREAD_RWLOCK_INITIALIZER;
+static pthread_rwlock_t event_mutex = PTHREAD_RWLOCK_INITIALIZER;
 static int ems_mutex_initialized = 0;  // Flag para indicar se o mutex foi inicializado
 
 
@@ -55,10 +55,10 @@ static unsigned int* get_seat_with_delay(struct Event* event, size_t index) {
 static size_t seat_index(struct Event* event, size_t row, size_t col) { return (row - 1) * event->cols + col - 1; }
 
 int ems_init(unsigned int delay_ms) {
-  pthread_mutex_lock(&ems_mutex);
+  pthread_rwlock_wrlock(&init_mutex);
 
   if (ems_mutex_initialized) {
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 0;  // Já inicializado, não é necessário fazer nada
   }
 
@@ -68,28 +68,28 @@ int ems_init(unsigned int delay_ms) {
 
   if (event_list == NULL) {
     printf("ERR: Failed to create event_list.\n");
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
   ems_mutex_initialized = 1;
 
-  pthread_mutex_unlock(&ems_mutex);
+  pthread_rwlock_unlock(&init_mutex);
 
   return event_list == NULL;
 }
 
 int ems_terminate() {
-  pthread_mutex_lock(&ems_mutex);
+  pthread_rwlock_wrlock(&init_mutex);
 
   if (event_list == NULL) {
     printf("ERR: EMS state must be initialized.\n");
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
   if (!ems_mutex_initialized) {
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 0;  // Já terminado, não é necessário fazer nada
   }
 
@@ -99,32 +99,30 @@ int ems_terminate() {
 
   ems_mutex_initialized = 0;
 
-  pthread_mutex_unlock(&ems_mutex);
-
-  // Destrua o mutex se necessário
+  pthread_rwlock_unlock(&init_mutex);
   return 0;
 }
 
 
 int ems_create(unsigned int event_id, size_t num_rows, size_t num_cols, int output_fd) {
-  pthread_mutex_lock(&ems_mutex);
+  pthread_rwlock_rdlock(&init_mutex);
 
   if (!ems_mutex_initialized || event_list == NULL) {
     write(output_fd, "ERR: EMS state must be initialized.\n", 36);
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
   
   if (get_event_with_delay(event_id) != NULL) {
     write(output_fd, "ERR: Event already exists.\n", 27);
-      pthread_mutex_unlock(&ems_mutex);
+      pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
   struct Event* event = malloc(sizeof(struct Event));
 
   if (event == NULL) {
     write(output_fd, "ERR: Unable to allocate memory for event.\n", 42);
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
@@ -133,11 +131,12 @@ int ems_create(unsigned int event_id, size_t num_rows, size_t num_cols, int outp
   event->cols = num_cols;
   event->reservations = 0;
   event->data = malloc(num_rows * num_cols * sizeof(unsigned int));
+  pthread_rwlock_init(&event->seat_mutex, NULL);
 
   if (event->data == NULL) {
     write(output_fd, "ERR: Unable to allocate memory for event data.\n", 47);
     free(event);
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
@@ -145,36 +144,42 @@ int ems_create(unsigned int event_id, size_t num_rows, size_t num_cols, int outp
     event->data[i] = 0;
   }
 
+  pthread_rwlock_wrlock(&event_mutex);
   if (append_to_list(event_list, event) != 0) {
     write(output_fd, "ERR: Unable to append event to list.\n", 37);
     free(event->data);
     free(event);
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
+    pthread_rwlock_unlock(&event_mutex);
     return 1;
   }
+  pthread_rwlock_unlock(&event_mutex);
 
-  pthread_mutex_unlock(&ems_mutex);
-
+  pthread_rwlock_unlock(&init_mutex);
   return 0;
 }
 
 int ems_reserve(unsigned int event_id, size_t num_seats, size_t* xs, size_t* ys, int output_fd) {
-  pthread_mutex_lock(&ems_mutex);
+  pthread_rwlock_rdlock(&init_mutex);
 
   if (!ems_mutex_initialized || event_list == NULL) {
     write(output_fd, "ERR: EMS state must be initialized.\n", 36);
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
+  pthread_rwlock_rdlock(&event_mutex);
   struct Event* event = get_event_with_delay(event_id);
 
   if (event == NULL) {
     write(output_fd, "ERR: Event not found.\n", 22);
-      pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
+    pthread_rwlock_unlock(&event_mutex);
     return 1;
   }
-
+  pthread_rwlock_unlock(&event_mutex);
+  
+  pthread_rwlock_wrlock(&event->seat_mutex);
   unsigned int reservation_id = ++event->reservations;
 
   size_t i = 0;
@@ -201,39 +206,41 @@ int ems_reserve(unsigned int event_id, size_t num_seats, size_t* xs, size_t* ys,
     for (size_t j = 0; j < i; j++) {
       *get_seat_with_delay(event, seat_index(event, xs[j], ys[j])) = 0;
     }
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&event->seat_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
+  pthread_rwlock_unlock(&event->seat_mutex);
 
-  pthread_mutex_unlock(&ems_mutex);
+  pthread_rwlock_unlock(&init_mutex);
   return 0;
 }
 
 int ems_show(unsigned int event_id, int output_fd) {
-  pthread_mutex_lock(&ems_mutex);
+  pthread_rwlock_rdlock(&init_mutex);
 
   if (!ems_mutex_initialized || event_list == NULL) {
     write(output_fd, "ERR: EMS state must be initialized.\n", 36);
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
+  pthread_rwlock_rdlock(&event_mutex);
   struct Event* event = get_event_with_delay(event_id);
   
-  pthread_mutex_unlock(&ems_mutex);
-
   if (event == NULL) {
     write(output_fd, "ERR: Event not found.\n", 22);
+    pthread_rwlock_unlock(&init_mutex);
+    pthread_rwlock_unlock(&event_mutex);
     return 1;
   }
+  pthread_rwlock_unlock(&event_mutex);
 
+  pthread_rwlock_rdlock(&event->seat_mutex);
   for (size_t i = 1; i <= event->rows; i++) {
     for (size_t j = 1; j <= event->cols; j++) {
-      pthread_rwlock_rdlock(&rw_mutex);
       unsigned int* seat = get_seat_with_delay(event, seat_index(event, i, j));
-      pthread_rwlock_unlock(&rw_mutex);
 
-      pthread_rwlock_wrlock(&rw_mutex);
       char seat_str[12];
       //Turns the seat variable from an int into a string.  
       int_to_str(*seat, seat_str);
@@ -242,40 +249,40 @@ int ems_show(unsigned int event_id, int output_fd) {
       seat_msg[0] = seat_str;
       //Writes the value of the seat in row i and column j in the output file.
       build_string(output_fd, seat_msg, 1);
-      pthread_rwlock_unlock(&rw_mutex);
 
       if (j < event->cols) {
-        pthread_rwlock_wrlock(&rw_mutex);
         write(output_fd, " ", 1);
-        pthread_rwlock_unlock(&rw_mutex);
       }
     }
-    pthread_rwlock_wrlock(&rw_mutex);
     write(output_fd, "\n", 1);
-    pthread_rwlock_unlock(&rw_mutex);
   }
+  pthread_rwlock_unlock(&event->seat_mutex);
 
+  pthread_rwlock_unlock(&init_mutex);
   return 0;
 }
 
 int ems_list_events(int output_fd) {
-  pthread_mutex_lock(&ems_mutex);
+  pthread_rwlock_rdlock(&init_mutex);
 
   if (!ems_mutex_initialized || event_list == NULL) {
     write(output_fd, "ERR: EMS state must be initialized.\n", 36);
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
+  pthread_rwlock_rdlock(&event_mutex);
   if (event_list->head == NULL) {
     write(output_fd, "No events.\n", 11);
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&event_mutex);
+    pthread_rwlock_unlock(&init_mutex);
     return 0;
   }
 
   struct ListNode* current = event_list->head;
 
   while (current != NULL) {
+    pthread_rwlock_unlock(&event_mutex);
     char event_id[12];  
     //Turns the ID of the event from an unsigned int into a string.
     int_to_str((current->event)->id, event_id);
@@ -284,10 +291,12 @@ int ems_list_events(int output_fd) {
     event_msg[1] = event_id;
     //Write the event id in the output file.
     build_string(output_fd, event_msg, 2);
+    pthread_rwlock_rdlock(&event_mutex);
     current = current->next;
   }
+  pthread_rwlock_unlock(&event_mutex);
 
-  pthread_mutex_unlock(&ems_mutex);
+  pthread_rwlock_unlock(&init_mutex);
   return 0;
 }
 
@@ -302,15 +311,15 @@ int ems_process_command(int input_fd, int output_fd, unsigned int *thread_id) {
     size_t num_rows, num_columns, num_coords;
     size_t xs[MAX_RESERVATION_SIZE], ys[MAX_RESERVATION_SIZE];
 
-    pthread_mutex_lock(&ems_mutex);
+      pthread_rwlock_rdlock(&init_mutex);
 
     if (!ems_mutex_initialized || event_list == NULL) {
       write(output_fd, "ERR: EMS state must be initialized.\n", 36);
-      pthread_mutex_unlock(&ems_mutex);
+      pthread_rwlock_unlock(&init_mutex);
       return 1;
     }
 
-    pthread_mutex_unlock(&ems_mutex);
+    pthread_rwlock_unlock(&init_mutex);
 
     switch (get_next(input_fd)) {
       case CMD_CREATE:

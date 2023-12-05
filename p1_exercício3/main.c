@@ -15,7 +15,6 @@
 #include "parser.h"
 
 struct ThreadInfo {
-  //pthread_t thread;
   unsigned int *thread_id;
   char *input_path;
   char *output_path;
