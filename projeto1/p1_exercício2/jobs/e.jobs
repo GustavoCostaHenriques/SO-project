@@ -1,3 +1,0 @@
-CREATE 5 10 10
-RESERVE 5 [(4,7) (7,6)]
-SHOW 5
