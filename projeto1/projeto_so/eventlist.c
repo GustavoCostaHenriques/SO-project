@@ -1,7 +1,5 @@
 #include "eventlist.h"
-
-#include <stdlib.h>
-#include <stdio.h>
+#include "constants.h"
 
 struct EventList* create_list() {
   struct EventList* list = (struct EventList*)malloc(sizeof(struct EventList));

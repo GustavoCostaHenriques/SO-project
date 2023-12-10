@@ -21,8 +21,8 @@ ems: main.c constants.h operations.o parser.o eventlist.o
 run: ems
 	@./ems 
 
-clean: # TIRAR jobs/*.out ANTES DA ENTREGA
-	rm -f *.o ems jobs/*.out public/*.out
+clean: 
+	rm -f *.o ems 
 
 format:
 	@which clang-format >/dev/null 2>&1 || echo "Please install clang-format to run this command"

@@ -1,54 +1,26 @@
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <time.h>
-#include <unistd.h>
-#include <pthread.h>
-
-#include "eventlist.h"
 #include "constants.h"
+#include "eventlist.h"
+#include "operations.h"
 #include "parser.h"
 
 static struct EventList* event_list = NULL;
 static unsigned int state_access_delay_ms = 0;
+
 static pthread_rwlock_t init_mutex = PTHREAD_RWLOCK_INITIALIZER;
 static pthread_rwlock_t event_mutex = PTHREAD_RWLOCK_INITIALIZER;
 static pthread_rwlock_t write_mutex = PTHREAD_RWLOCK_INITIALIZER;
-//static pthread_cond_t wait_thread = PTHREAD_COND_INITIALIZER;
+
 unsigned int thread_id_wait = (unsigned int)-1;
 unsigned int delay_wait;
 
-struct Coord {
-  size_t xs[MAX_RESERVATION_SIZE];
-  size_t ys[MAX_RESERVATION_SIZE];
-};
-
-struct ThreadInfo {
-  int thread_id;
-  unsigned int thread_id_wait;
-  unsigned int delay_wait;
-  enum Command command;
-  int output_fd;
-  int input_fd;
-  unsigned int event_id;
-  size_t num_rows;
-  size_t num_columns;
-  size_t num_coords;
-  struct Coord coord;
-  int invalid_command;
-  int barrier;
-  int is_active;
-};
-
-
-/// Calculates a timespec from a delay in milliseconds.
+/// @brief Calculates a timespec from a delay in milliseconds.
 /// @param delay_ms Delay in milliseconds.
 /// @return Timespec with the given delay.
 static struct timespec delay_to_timespec(unsigned int delay_ms) {
   return (struct timespec){delay_ms / 1000, (delay_ms % 1000) * 1000000};
 }
 
-/// Gets the event with the given ID from the state.
+/// @brief Gets the event with the given ID from the state.
 /// @note Will wait to simulate a real system accessing a costly memory resource.
 /// @param event_id The ID of the event to get.
 /// @return Pointer to the event if found, NULL otherwise.
@@ -59,7 +31,7 @@ static struct Event* get_event_with_delay(unsigned int event_id) {
   return get_event(event_list, event_id);
 }
 
-/// Gets the seat with the given index from the state.
+/// @brief Gets the seat with the given index from the state.
 /// @note Will wait to simulate a real system accessing a costly memory resource.
 /// @param event Event to get the seat from.
 /// @param index Index of the seat to get.
@@ -71,7 +43,7 @@ static unsigned int* get_seat_with_delay(struct Event* event, size_t index) {
   return &event->data[index];
 }
 
-/// Gets the index of a seat.
+/// @brief Gets the index of a seat.
 /// @note This function assumes that the seat exists.
 /// @param event Event to get the seat index from.
 /// @param row Row of the seat.
@@ -79,7 +51,14 @@ static unsigned int* get_seat_with_delay(struct Event* event, size_t index) {
 /// @return Index of the seat.
 static size_t seat_index(struct Event* event, size_t row, size_t col) { return (row - 1) * event->cols + col - 1; }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////// MANIPULATION OF EVENTS ////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 int ems_init(unsigned int delay_ms) {
+  // Write lock for init_mutex.
   pthread_rwlock_wrlock(&init_mutex);
 
   // Inicializa a estrutura de dados (event_list) apenas uma vez
@@ -88,20 +67,24 @@ int ems_init(unsigned int delay_ms) {
 
   if (event_list == NULL) {
     printf("ERR: Failed to create event_list.\n");
+    // Read/Write unlock for init_mutex.
     pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
+  // Read/Write unlock for init_mutex.
   pthread_rwlock_unlock(&init_mutex);
 
   return event_list == NULL;
 }
 
 int ems_terminate() {
+  // Write lock for init_mutex.
   pthread_rwlock_wrlock(&init_mutex);
 
   if (event_list == NULL) {
     printf("ERR: EMS state must be initialized.\n");
+    // Read/Write unlock for init_mutex.
     pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
@@ -110,24 +93,30 @@ int ems_terminate() {
   event_list = NULL;
   state_access_delay_ms = 0;
 
+  // Read/Write unlock for init_mutex.
   pthread_rwlock_unlock(&init_mutex);
   return 0;
 }
 
 
 int ems_create(unsigned int event_id, size_t num_rows, size_t num_cols) {
+  // Read lock for init_mutex.
   pthread_rwlock_rdlock(&init_mutex);
 
   if (event_list == NULL) {
     printf("ERR: EMS state must be initialized.\n");
+    // Read/Write unlock for init_mutex.
     pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
   
+  // Write lock for event_mutex.
   pthread_rwlock_wrlock(&event_mutex);
   if (get_event_with_delay(event_id) != NULL) {
     printf("ERR: Event already exists.\n");
+    // Read/Write unlock for event_mutex.
     pthread_rwlock_unlock(&event_mutex);
+    // Read/Write unlock for init_mutex.
     pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
@@ -136,8 +125,10 @@ int ems_create(unsigned int event_id, size_t num_rows, size_t num_cols) {
 
   if (event == NULL) {
     printf("ERR: Unable to allocate memory for event.\n");
-    pthread_rwlock_unlock(&init_mutex);
+    // Read/Write unlock for event_mutex.
     pthread_rwlock_unlock(&event_mutex);
+    // Read/Write unlock for init_mutex.
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
@@ -146,13 +137,16 @@ int ems_create(unsigned int event_id, size_t num_rows, size_t num_cols) {
   event->cols = num_cols;
   event->reservations = 0;
   event->data = malloc(num_rows * num_cols * sizeof(unsigned int));
+  // Write lock initialization for seat_mutex.
   pthread_rwlock_init(&event->seat_mutex, NULL);
 
   if (event->data == NULL) {
     printf("ERR: Unable to allocate memory for event data.\n");
     free(event);
+    // Read/Write unlock for event_mutex.
+    pthread_rwlock_unlock(&event_mutex);
+    // Read/Write unlock for init_mutex.
     pthread_rwlock_unlock(&init_mutex);
-      pthread_rwlock_unlock(&event_mutex);
     return 1;
   }
 
@@ -164,35 +158,46 @@ int ems_create(unsigned int event_id, size_t num_rows, size_t num_cols) {
     printf("ERR: Unable to append event to list.\n");
     free(event->data);
     free(event);
-    pthread_rwlock_unlock(&init_mutex);
+    // Read/Write unlock for event_mutex.
     pthread_rwlock_unlock(&event_mutex);
+    // Read/Write unlock for init_mutex.
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
-  pthread_rwlock_unlock(&event_mutex);
 
+  // Read/Write unlock for event_mutex.
+  pthread_rwlock_unlock(&event_mutex);
+  // Read/Write unlock for init_mutex.
   pthread_rwlock_unlock(&init_mutex);
   return 0;
 }
 
 int ems_reserve(unsigned int event_id, size_t num_seats, size_t* xs, size_t* ys) {
+  // Read lock for init_mutex.
   pthread_rwlock_rdlock(&init_mutex);
 
   if (event_list == NULL) {
     printf("ERR: EMS state must be initialized.\n");
+    // Read/Write unlock for init_mutex.
     pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
+  // Read lock for event_mutex.
   pthread_rwlock_rdlock(&event_mutex);
   struct Event* event = get_event_with_delay(event_id);
   if (event == NULL) {
     printf("ERR: Event not found.\n");
-    pthread_rwlock_unlock(&init_mutex);
+    // Read/Write unlock for event_mutex.
     pthread_rwlock_unlock(&event_mutex);
+    // Read/Write unlock for init_mutex.
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
+  // Read/Write unlock for event_mutex.
   pthread_rwlock_unlock(&event_mutex);
   
+  // Write lock for seat_mutex.
   pthread_rwlock_wrlock(&event->seat_mutex);
   unsigned int reservation_id = ++event->reservations;
 
@@ -220,48 +225,60 @@ int ems_reserve(unsigned int event_id, size_t num_seats, size_t* xs, size_t* ys)
     for (size_t j = 0; j < i; j++) {
       *get_seat_with_delay(event, seat_index(event, xs[j], ys[j])) = 0;
     }
+
+    // Read/Write unlock for seat_mutex.
     pthread_rwlock_unlock(&event->seat_mutex);
+    // Read/Write unlock for init_mutex.
     pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
-  pthread_rwlock_unlock(&event->seat_mutex);
 
+  // Read/Write unlock for seat_mutex.
+  pthread_rwlock_unlock(&event->seat_mutex);
+  // Read/Write unlock for init_mutex.
   pthread_rwlock_unlock(&init_mutex);
   return 0;
 }
 
 int ems_show(unsigned int event_id, int output_fd) {
+  // Read lock for init_mutex.
   pthread_rwlock_rdlock(&init_mutex);
 
   if (event_list == NULL) {
     printf("ERR: EMS state must be initialized.\n");
+    // Read/Write unlock for init_mutex.
     pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
+  // Read lock for event_mutex.
   pthread_rwlock_rdlock(&event_mutex);
   struct Event* event = get_event_with_delay(event_id);
   
   if (event == NULL) {
     printf("ERR: Event not found.\n");
-    pthread_rwlock_unlock(&init_mutex);
+    // Read/Write unlock for event_mutex.
     pthread_rwlock_unlock(&event_mutex);
+    // Read/Write unlock for init_mutex.
+    pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
+  // Write lock for seat_mutex.
   pthread_rwlock_rdlock(&event->seat_mutex);
+  // Write lock for write_mutex.
   pthread_rwlock_wrlock(&write_mutex);
   for (size_t i = 1; i <= event->rows; i++) {
     for (size_t j = 1; j <= event->cols; j++) {
       unsigned int* seat = get_seat_with_delay(event, seat_index(event, i, j));
 
       char seat_str[12];
-      //Turns the seat variable from an int into a string.  
+      // Turns the seat variable from an int into a string.  
       int_to_str(*seat, seat_str);
 
       const char *seat_msg[1];
       seat_msg[0] = seat_str;
-      //Writes the value of the seat in row i and column j in the output file.
+      // Writes the value of the seat in row i and column j in the output file.
       build_string(output_fd, seat_msg, 1);
 
       if (j < event->cols) {
@@ -270,50 +287,64 @@ int ems_show(unsigned int event_id, int output_fd) {
     }
     write(output_fd, "\n", 1);
   }
+
+  // Read/Write unlock for seat_mutex.
   pthread_rwlock_unlock(&event->seat_mutex);
+  // Read/Write unlock for event_mutex.
   pthread_rwlock_unlock(&event_mutex);
-  pthread_rwlock_unlock(&init_mutex);
+  // Read/Write unlock for write_mutex.
   pthread_rwlock_unlock(&write_mutex);
+  // Read/Write unlock for init_mutex.
+  pthread_rwlock_unlock(&init_mutex);
   return 0;
 }
 
 int ems_list_events(int output_fd) {
+  // Read lock for init_mutex.
   pthread_rwlock_rdlock(&init_mutex);
 
   if (event_list == NULL) {
     printf("ERR: EMS state must be initialized.\n");
+    // Read/Write unlock for init_mutex.
     pthread_rwlock_unlock(&init_mutex);
     return 1;
   }
 
+  // Read/Write unlock for event_mutex.
   pthread_rwlock_rdlock(&event_mutex);
+  // Read/Write unlock for write_mutex.
   pthread_rwlock_wrlock(&write_mutex);
   if (event_list->head == NULL) {
     write(output_fd, "No events\n", 10);
+    // Read/Write unlock for event_mutex.
     pthread_rwlock_unlock(&event_mutex);
-    pthread_rwlock_unlock(&init_mutex);
+    // Read/Write unlock for write_mutex.
     pthread_rwlock_unlock(&write_mutex);
+    // Read/Write unlock for init_mutex.
+    pthread_rwlock_unlock(&init_mutex);
     return 0;
   }
 
   struct ListNode* current = event_list->head;
 
   while (current != NULL) {
-    //pthread_rwlock_unlock(&event_mutex);
     char event_id[12];  
-    //Turns the ID of the event from an unsigned int into a string.
+    // Turns the ID of the event from an unsigned int into a string.
     int_to_str((current->event)->id, event_id);
     const char *event_msg[3];
     event_msg[0] = "Event: ";
     event_msg[1] = event_id;
     event_msg[2] = "\n";
-    //Write the event id in the output file.
+    // Write the event id in the output file.
     build_string(output_fd, event_msg, 3);
-    //pthread_rwlock_rdlock(&event_mutex);
     current = current->next;
   }
+
+  // Read/Write unlock for event_mutex.
   pthread_rwlock_unlock(&event_mutex);
+  // Read/Write unlock for write_mutex.
   pthread_rwlock_unlock(&write_mutex);
+  // Read/Write unlock for init_mutex.
   pthread_rwlock_unlock(&init_mutex);
   return 0;
 }
@@ -323,101 +354,96 @@ void ems_wait(unsigned int delay_ms) {
   nanosleep(&delay, NULL);
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////// PROCESSES ALL THE COMMANDS THAT EXIST IN THE INPUT FILE ///////////////////////////////
+////////////////////////////////////////////////// TO THE OUTPUT FILE /////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
 void *ems_process_command(void *arg) {
   struct ThreadInfo *threadInfo = (struct ThreadInfo *)arg;
-  int thread_id = threadInfo->thread_id;
-  int output_fd = threadInfo->output_fd;
-  enum Command command = threadInfo->command;
-  unsigned int event_id = threadInfo->event_id;
-  size_t num_rows = threadInfo->num_rows; 
-  size_t num_columns = threadInfo->num_columns;
-  size_t num_coords = threadInfo->num_coords;
+
+  // 'Activation' of the Thread.
   threadInfo->is_active = 1;
 
-  if(threadInfo->invalid_command){
+  if(threadInfo->invalid_command){ // Verify if the command is valid.
     printf("ERR: Invalid command. See HELP for usage.\n");
     return NULL;
   }
 
+  // Read lock for init_mutex.
   pthread_rwlock_rdlock(&init_mutex);
 
   if (event_list == NULL) {
     printf("ERR: EMS state must be initialized.\n");
+    // Read/Write unlock for init_mutex.
     pthread_rwlock_unlock(&init_mutex);
     return NULL;
   }
 
-  if(thread_id_wait == 0){
-    if (delay_wait > 0) {
+  if(thread_id_wait == 0){  // Verify if all the Threads have to wait.
+    if (delay_wait > 0) { // Verify if the delay is valid.
       printf("Waiting...\n");
-      ems_wait(delay_wait);
-      delay_wait = 0;
+      ems_wait(delay_wait); // Performs the waiting.
+      delay_wait = 0; // 
       thread_id_wait = (unsigned int)-1;
     }
   }
-  if(thread_id_wait > 0 && thread_id == (int)thread_id_wait){
-    if (delay_wait > 0) {
+  // Verify if it is this specific Thread that has to do the waiting.
+  if(thread_id_wait > 0 && threadInfo->thread_id == (int)thread_id_wait){ 
+    if (delay_wait > 0) { // Verify if the delay is valid.
       printf("Waiting...\n");
-      ems_wait(delay_wait);
+      ems_wait(delay_wait); // Performs the waiting.
       delay_wait = 0;
       thread_id_wait = (unsigned int)-1;
     }
   }
 
+  // Read/Write unlock for init_mutex.
   pthread_rwlock_unlock(&init_mutex);
 
-  switch (command) {
+  switch (threadInfo->command) {
     case CMD_CREATE:
-      if (ems_create(event_id, num_rows, num_columns)) {
+      // Performs and verifies the command CREATE.
+      if (ems_create(threadInfo->event_id, threadInfo->num_rows, threadInfo->num_columns)) { 
         printf("ERR: Failed to create event.\n");        
       }
       break;
 
     case CMD_RESERVE:
-      if (num_coords == 0) {
+      if (threadInfo->num_coords == 0) { // Verify if the number of seats is valid
         printf("ERR: Invalid command. See HELP for usage.\n");        
       }
 
-      if (ems_reserve(event_id, num_coords, threadInfo->coord.xs, threadInfo->coord.ys)) {
+      // Performs and verifies the command RESERVE.
+      if (ems_reserve(threadInfo->event_id, threadInfo->num_coords, threadInfo->coord.xs, threadInfo->coord.ys)) { 
         printf("ERR: Failed to reserve seats.\n");        
       }
       break;
 
     case CMD_SHOW:
-      if (ems_show(event_id, output_fd)) {
+      // Performs and verifies the command SHOW.
+      if (ems_show(threadInfo->event_id, threadInfo->output_fd)) {
         printf("ERR: Failed to show event.\n");        
       }
       break;
 
     case CMD_LIST_EVENTS:
-      if (ems_list_events(output_fd)) {
+      // Performs and verifies the command LIST.
+      if (ems_list_events(threadInfo->output_fd)) {
         printf("ERR: Failed to list events.\n");
       }
       break;
 
     case CMD_WAIT:
-      if(thread_id_wait == (unsigned int)-1)
-        thread_id_wait = 0;
-
-      if(thread_id_wait == 0) {
-        if (delay_wait > 0) {
-          printf("Waiting...\n");
-          ems_wait(delay_wait);
-          delay_wait = 0;
-          thread_id_wait = (unsigned int)-1;
-        }
-      }
-      else if(thread_id_wait > 0 && thread_id == (int)thread_id_wait){
-        if (delay_wait > 0) {
-          printf("Waiting...\n");
-          ems_wait(delay_wait);
-          delay_wait = 0;
-          thread_id_wait = (unsigned int)-1;
-        }
-      }
+      // The waiting has already been done before the switch case, because it can be
+      // for all the Threads and not the one that receive this command.
       break;
 
     case CMD_INVALID:
+      printf("ERR: Invalid command. See HELP for usage.\n");
       break;
 
     case CMD_HELP:
@@ -437,9 +463,12 @@ void *ems_process_command(void *arg) {
     case CMD_EMPTY:
       break;
     case EOC:
+      // 'Desactivation' of the Thread.
       threadInfo->is_active = 0;
       return 0;
   }
+
+  // 'Desactivation' of the Thread.
   threadInfo->is_active = 0;
   return 0;
 }
@@ -492,11 +521,10 @@ int parse_command(void *arg) {
       if (parse_wait(threadInfo->input_fd, &delay_wait, &thread_id_wait) == -1) {
         threadInfo->invalid_command = 1;        
       }
-      threadInfo->delay_wait = delay_wait;
-      threadInfo->thread_id_wait = thread_id_wait;
       break;
 
     case CMD_INVALID:
+      threadInfo->invalid_command = 1;        
       break;
 
     case CMD_HELP:
@@ -586,7 +614,6 @@ void ems_create_thread(int input_fd, int output_fd, int max_threads) {
     if(thread_infos[i] != NULL) {
       pthread_join(threads[i], NULL);
       free(thread_infos[i]);
-      //thread_infos[i] = NULL;
     }
   }
 }

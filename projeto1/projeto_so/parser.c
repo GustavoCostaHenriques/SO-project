@@ -1,17 +1,5 @@
 #include "parser.h"
 #include "operations.h"
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <limits.h>
-#include <string.h>
-#include <dirent.h>
-#include <errno.h>
-
 #include "constants.h"
 
 static int read_uint(int fd, unsigned int *value, char *next) {
@@ -50,6 +38,12 @@ static void cleanup(int fd) {
   while (read(fd, &ch, 1) == 1 && ch != '\n')
     ;
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////// FUNCTIONS FOR SYNTAX ANALYSIS AND COMMAND MANIPULATION //////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 enum Command get_next(int fd) {
   char buf[16];
@@ -266,8 +260,11 @@ int parse_wait(int fd, unsigned int *delay, unsigned int *thread_id) {
 
 }
 
-/*---------------------------------Functions for PIDList manipulation--------------------------------------------*/
-
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////// FUNCTIONS FOR PIDList MANIPULATION /////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void init_pid_list(PIDList *list, size_t capacity) {
   list->pids = malloc(capacity * sizeof(pid_t)); // Allocate memory for the PID array.
@@ -303,8 +300,11 @@ void free_pid_list(PIDList *list) {
   list->capacity = 0;  // Reset the capacity to 0.
 }
 
-
-/*-----------------------------------------Auxiliary Functions---------------------------------------------------*/
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////// AUXILIARY FUNCTIONS /////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void build_string(int output_fd, const char **strings, int n_strings) {
   size_t total_length = 0;
@@ -402,6 +402,13 @@ size_t count_files(const char *directory){
   return number_of_files;
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////// FUNCTIONS TO PROCESS FILES IN PARALLEL //////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
 void process_file(const char *filename, PIDList *active_children, int max_threads, unsigned int delay_ms) {
   // Open the file for reading.
   int fd = open(filename, O_RDONLY);
@@ -445,6 +452,7 @@ void process_file(const char *filename, PIDList *active_children, int max_thread
     return;
   }
 
+  // Initialize EMS.
   if (ems_init(delay_ms)) {
     printf("Failed to initialize EMS\n");
     return;  
@@ -462,7 +470,6 @@ void process_file(const char *filename, PIDList *active_children, int max_thread
     return;
   } else if (pid == 0) {
     // Child process code.
-    // Initialize EMS.
     // Process commands using EMS.
     ems_create_thread(fd, out_fd, max_threads);
     // Cleanup and exit child process successfully.
@@ -479,6 +486,8 @@ void process_file(const char *filename, PIDList *active_children, int max_thread
     // Add the PID of the child process to the active_children list.
     add_pid(active_children, pid);
   }
+
+  // Terminate EMS.
   ems_terminate();
 }
 
@@ -512,6 +521,7 @@ void process_directory(const char *directory, int max_processes, int max_threads
       if (strcmp(strrchr(entry->d_name, '.'), ".jobs") == 0) {
         // Process the file in parallel
         if (active_children.size < (size_t)max_processes) {
+          // Processes the file with the filename, executing each line in parallel.
           process_file(filename, &active_children, max_threads, delay_ms);
         } 
         else {
@@ -519,13 +529,13 @@ void process_directory(const char *directory, int max_processes, int max_threads
           int status;
           pid_t child_pid = waitpid(-1, &status, 0);
           if (WIFEXITED(status)) {
-            printf("Processo filho %d terminou normalmente com código de saída %d.\n", child_pid, WEXITSTATUS(status));
+            printf("Child process %d terminated normally with exit code %d.\n", child_pid, WEXITSTATUS(status));
           } else if (WIFSIGNALED(status)) {
-            printf("Processo filho %d terminou devido a um sinal com código %d.\n", child_pid, WTERMSIG(status));
+            printf("Child process %d terminated due to a signal with code %d.\n", child_pid, WTERMSIG(status));
           }
           // Remove the finished child process from the list of active children PIDs.
           remove_pid(&active_children, child_pid);
-
+          // Processes the file with the filename, executing each line in parallel.
           process_file(filename, &active_children, max_threads, delay_ms);
         }
       }
@@ -539,10 +549,11 @@ void process_directory(const char *directory, int max_processes, int max_threads
     if(i >= number_of_files) break;
     pid_t child_pid = waitpid(-1, &status, 0);
     if (WIFEXITED(status)) {
-        printf("Processo filho %d terminou normalmente com código de saída %d.\n", child_pid, WEXITSTATUS(status));
+        printf("Child process %d terminated normally with exit code %d.\n", child_pid, WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
-      printf("Processo filho %d terminou devido a um sinal com código %d.\n", child_pid, WTERMSIG(status));
+      printf("Child process %d terminated due to a signal with code %d.\n", child_pid, WTERMSIG(status));
     }
+    // Remove the finished child process from the list of active children PIDs.
     remove_pid(&active_children, child_pid);
   }
 
