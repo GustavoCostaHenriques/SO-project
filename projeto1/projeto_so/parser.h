@@ -127,7 +127,7 @@ void process_file(const char *filename, PIDList *active_children, int max_thread
 /// @brief Process the files in the directory, executing commands in parallel.
 /// @param directory Path of the directory.
 /// @param max_processes Maximum number of processes in parallel.
-/// @param max_threads MAximum number of threads in parallel for the same file.
+/// @param max_threads Maximum number of threads in parallel for the same file.
 /// @param delay_ms Delay in milliseconds.
 void process_directory(const char *directory, int max_processes, int max_threads, unsigned int delay_ms);
 

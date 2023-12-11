@@ -468,7 +468,7 @@ void *ems_process_command(void *arg) {
       return 0;
   }
 
-  // 'Desactivation' of the Thread.
+  // 'Deactivation' of the Thread.
   threadInfo->is_active = 0;
   return 0;
 }
@@ -480,58 +480,62 @@ int parse_command(void *arg) {
   size_t xs[MAX_RESERVATION_SIZE];
   size_t ys[MAX_RESERVATION_SIZE];
 
-  threadInfo->invalid_command = 0;
-  threadInfo->barrier = 0;
+  threadInfo->invalid_command = 0;            // Initialization of invalid command as false.
+  threadInfo->barrier = 0;                    // Initialization of barrier command as false.
 
   switch (threadInfo->command) {
     case CMD_CREATE:
+      // Performs the parsing of command CREATE.
       if (parse_create(threadInfo->input_fd, &event_id, &num_rows, &num_columns) != 0) {
-        threadInfo->invalid_command = 1;
+        threadInfo->invalid_command = 1;      // Set the invalid command to True.
       }
-      threadInfo->event_id = event_id;
-      threadInfo->num_rows = num_rows;
-      threadInfo->num_columns = num_columns;
+      threadInfo->event_id = event_id;        // Store ID event in the Thread.
+      threadInfo->num_rows = num_rows;        // Store the number of rows in the Thread.
+      threadInfo->num_columns = num_columns;  // Store the number of columns in the Thread
       break;
 
     case CMD_RESERVE:
+      // Performs the parsing of command RESERVE.
       num_coords = parse_reserve(threadInfo->input_fd, MAX_RESERVATION_SIZE, &event_id, xs, ys);
       
-      threadInfo->event_id = event_id;
-      threadInfo->num_coords = num_coords;
+      threadInfo->event_id = event_id;        // Store ID event in the Thread.
+      threadInfo->num_coords = num_coords;    // Store number of coordenates in the Thread.
       struct Coord coord;
       size_t i = 0;
       for(; i < num_coords; i++){
-        coord.xs[i] = xs[i];
-        coord.ys[i] = ys[i];
+        coord.xs[i] = xs[i];                  // Store each X coordenate in the struct coord.
+        coord.ys[i] = ys[i];                  // Store each Y coordenate in the struct coord.
       }
-      threadInfo->coord = coord;
+      threadInfo->coord = coord;              // Store the struct coord in the Thread.
       break;
 
     case CMD_SHOW:
+      // Performs the parsing of command SHOW.
       if (parse_show(threadInfo->input_fd, &event_id) != 0) {
-        threadInfo->invalid_command = 1;        
+        threadInfo->invalid_command = 1;      // Set the invalid command to True.      
       }
-      threadInfo->event_id = event_id;
+      threadInfo->event_id = event_id;        // Store ID event in the Thread.
       break;
 
     case CMD_LIST_EVENTS:
       break;
 
     case CMD_WAIT:
+      // Performs the parsing of command WAIT.
       if (parse_wait(threadInfo->input_fd, &delay_wait, &thread_id_wait) == -1) {
-        threadInfo->invalid_command = 1;        
+        threadInfo->invalid_command = 1;      // Set the invalid command to True.     
       }
       break;
 
     case CMD_INVALID:
-      threadInfo->invalid_command = 1;        
+      threadInfo->invalid_command = 1;        // Set the invalid command to True.  
       break;
 
     case CMD_HELP:
       break;
 
     case CMD_BARRIER:
-      threadInfo->barrier = 1;
+      threadInfo->barrier = 1;                // Set the barrier command to True.
       break;
     case CMD_EMPTY:
       break;
@@ -546,73 +550,84 @@ void ems_create_thread(int input_fd, int output_fd, int max_threads) {
   struct ThreadInfo *thread_infos[max_threads];
 
   for(int i = 0; i < max_threads; i++) {
-    thread_infos[i] = NULL;
+    thread_infos[i] = NULL; // Initialization of all structs to NULL.
   }
 
-  int thread_count = 0;
-  int thread_count_aux = 0;
-  int thread_ended;
-  int terminate = 0;
+  int thread_count = 0;     // Initialization of the the number of threads.
+  int thread_count_aux = 0; // Auxiliar variables to count the number of threads.
+  int thread_ended;         // Boolean to know if the Thread has ended.
+  int terminate = 0;        // Boolean to know if the command read is EOC.
 
   while(!terminate){
-    thread_ended = 0;
+    thread_ended = 0; // Initialization of thread_ended to false.
+    // Allocation of the Thread.
     thread_infos[thread_count_aux] = malloc(sizeof(struct ThreadInfo));
-    if (thread_infos[thread_count_aux] == NULL) {
+
+    if (thread_infos[thread_count_aux] == NULL) { // Verify if the allocation of the Thread was successfull.
       printf("ERR: Failed to allocate memory for thread info\n");
       break;
     }
-    thread_infos[thread_count_aux]->thread_id = thread_count_aux+1;
-    thread_infos[thread_count_aux]->output_fd = output_fd;
-    thread_infos[thread_count_aux]->input_fd = input_fd;
-    thread_infos[thread_count_aux]->command = get_next(input_fd);
-    thread_infos[thread_count_aux]->is_active = 0;
-    if(parse_command((void *)thread_infos[thread_count_aux]) != 0)
-      terminate = 1;
+
+    thread_infos[thread_count_aux]->thread_id = thread_count_aux+1;   // Thread ID.
+    thread_infos[thread_count_aux]->output_fd = output_fd;            // File descriptor of the output file.
+    thread_infos[thread_count_aux]->input_fd = input_fd;              // File descriptor of the input file.
+    thread_infos[thread_count_aux]->command = get_next(input_fd);     // Reads next command.
+    thread_infos[thread_count_aux]->is_active = 0;                    // Set 'Activation' of Thread to false.
+
+    if(parse_command((void *)thread_infos[thread_count_aux]) != 0) // Parsing each line.
+      terminate = 1; // Set terminate to true.
     
+    // Creation of the Thread
     if (pthread_create(&threads[thread_count_aux], NULL, ems_process_command, (void *)thread_infos[thread_count_aux]) != 0) {
       printf("ERR: Failed to create thread\n");
-      thread_infos[thread_count_aux]->is_active = 1;
+      thread_infos[thread_count_aux]->is_active = 1; // Set 'Deactivation' of Thread to false.
       break;
     }
 
-    if(thread_infos[thread_count_aux]->barrier){
-      thread_ended = 1;
-      for (int i = 0; i <= thread_count; i++) {
+    if(thread_infos[thread_count_aux]->barrier){ // Verify if command read was the Barrier.
+      thread_ended = 1;  // Set thread_ended to True.
+
+      // Waiting for all the Threads to end.
+      for (int i = 0; i <= thread_count; i++) { 
         pthread_join(threads[i], NULL);
-        free(thread_infos[i]);
+        free(thread_infos[i]);  // Free all the Threads.
         thread_infos[i] = NULL;
       }
-      thread_count = 0;
-      thread_count_aux = 0;
+
+      thread_count = 0;     // Set thread_count to 0.
+      thread_count_aux = 0; // Set thread_count_aux to 0.
     } else {
-      thread_count++;
-      thread_count_aux++;
+      thread_count++;       // Increment of thread_count.
+      thread_count_aux++;   // Increment of thread_count_aux.
     }
 
-    if(terminate)
+    if(terminate) // Verify if command read was terminate.
       break;
 
-    if(thread_ended && thread_count < max_threads){
-      continue;
-    }
+    // If thread_ended or the number of active threads is lower of 
+    // max_threads there is no need to do the waiting.
+    if(thread_ended && thread_count < max_threads)continue;
 
+    // Waits until one Thread ends.
     while(thread_count == max_threads && !thread_ended){
       for (int i = 0; i < thread_count; i++) {
-        if(thread_infos[i]->is_active == 0) {
-          thread_count--;
-          thread_count_aux = i;
-          pthread_join(threads[i],NULL);
-          free(thread_infos[i]);
+        if(thread_infos[i]->is_active == 0) { // Verify of thread is active.
+          thread_count--;                     // Decrement of thread_count.
+          thread_count_aux = i;               // Set the Thread ID to the thread that ended.
+          pthread_join(threads[i],NULL);      // Waits for the inactive thread.
+          free(thread_infos[i]);              // Free this specific thread.
           thread_infos[i] = NULL;
-          thread_ended = 1;
+          thread_ended = 1;                   // Set thread_ended to True.
           break;
         }
       }
     }
   }
+
+  // Waiting of the remaining threads.
   for (int i = 0; i < max_threads; i++) {
     if(thread_infos[i] != NULL) {
-      pthread_join(threads[i], NULL);
+      pthread_join(threads[i], NULL); // Free all the remaining Threads.
       free(thread_infos[i]);
     }
   }

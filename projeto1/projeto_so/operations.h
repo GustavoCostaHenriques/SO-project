@@ -85,15 +85,15 @@ void ems_wait(unsigned int delay_ms);
 /// @param arg All the arguments that the struct ThreadInfo contains for this specific Thread.
 void *ems_process_command(void *arg);
 
-/// @brief 
-/// @param arg 
-/// @return 
+/// @brief Parses each line and stores the needed variables to the struct ThreadInfo for this specific Thread.
+/// @param arg All the arguments that the struct ThreadInfo will receive for this specific Thread.
+/// @return 1 if the command is EOC, 0 otherwise.
 int parse_command(void *arg);
 
-/// @brief 
-/// @param input_fd 
-/// @param output_fd 
-/// @param max_threads 
+/// @brief Creation of all necessary threads to process the input file.
+/// @param input_fd File descriptor of the input file
+/// @param output_fd File descriptor of the output file.
+/// @param max_threads Maximum number of threads in parallel for the same file.
 void ems_create_thread(int input_fd, int output_fd, int max_threads);
 
 

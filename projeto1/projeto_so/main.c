@@ -10,13 +10,13 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  int max_processes = atoi(argv[2]); // Transforms the maximum number of processes from string to integer.
-  int max_threads = atoi(argv[3]); // Transforms the maximum number of threads from string to integer.
-  if (max_processes <= 0) { // // Verify if the number of maximum processes is valid.
+  int max_processes = atoi(argv[2]);    // Transforms the maximum number of processes from string to integer.
+  int max_threads = atoi(argv[3]);      // Transforms the maximum number of threads from string to integer.
+  if (max_processes <= 0) {             // Verify if the number of maximum processes is valid.
     fprintf(stderr, "Invalid value for max_processes: %s\n", argv[2]);
     return 1;
   }
-  else if (max_threads <= 0){ // Verify if the number of maximum threads is valid.
+  else if (max_threads <= 0){           // Verify if the number of maximum threads is valid.
     fprintf(stderr, "Invalid value for max_threads: %s\n", argv[3]);
     return 1;
   }
