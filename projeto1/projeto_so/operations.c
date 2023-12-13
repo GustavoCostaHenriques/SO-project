@@ -383,21 +383,13 @@ void *ems_process_command(void *arg) {
     return NULL;
   }
 
-  if(thread_id_wait == 0){  // Verify if all the Threads have to wait.
-    if (delay_wait > 0) { // Verify if the delay is valid.
+  if(threadInfo->has_to_wait){   // Verify if thread has to wait.
+    if (threadInfo->delay > 0) { // Verify if the delay is valid.
       printf("Waiting...\n");
-      ems_wait(delay_wait); // Performs the waiting.
-      delay_wait = 0; // 
-      thread_id_wait = (unsigned int)-1;
-    }
-  }
-  // Verify if it is this specific Thread that has to do the waiting.
-  if(thread_id_wait > 0 && threadInfo->thread_id == (int)thread_id_wait){ 
-    if (delay_wait > 0) { // Verify if the delay is valid.
-      printf("Waiting...\n");
-      ems_wait(delay_wait); // Performs the waiting.
-      delay_wait = 0;
-      thread_id_wait = (unsigned int)-1;
+      ems_wait(delay_wait);                           // Performs the waiting.
+      threadInfo->delay = 0;                          // Sets delay to 0 again. 
+      threadInfo->thread_id_wait = (unsigned int)-1;  // Sets thread_id_wait to an invalid one.
+      threadInfo->has_to_wait = 0;                    // Indicates that the thread does not have to wait anymore.
     }
   }
 
@@ -482,6 +474,7 @@ int parse_command(void *arg) {
 
   threadInfo->invalid_command = 0;            // Initialization of invalid command as false.
   threadInfo->barrier = 0;                    // Initialization of barrier command as false.
+  threadInfo->has_to_wait = 0;
 
   switch (threadInfo->command) {
     case CMD_CREATE:
@@ -525,6 +518,10 @@ int parse_command(void *arg) {
       if (parse_wait(threadInfo->input_fd, &delay_wait, &thread_id_wait) == -1) {
         threadInfo->invalid_command = 1;      // Set the invalid command to True.     
       }
+      threadInfo->has_to_wait = 1;    
+      threadInfo->delay = delay_wait;
+      if(thread_id_wait>0)
+        threadInfo->thread_id_wait = thread_id_wait;
       break;
 
     case CMD_INVALID:
@@ -576,6 +573,18 @@ void ems_create_thread(int input_fd, int output_fd, int max_threads) {
 
     if(parse_command((void *)thread_infos[thread_count_aux]) != 0) // Parsing each line.
       terminate = 1; // Set terminate to true.
+
+    // Verify if all threads have to wait.
+    if(thread_infos[thread_count_aux]->has_to_wait && thread_infos[thread_count_aux]->thread_id_wait == 0){
+      for (int i = 0; i <= thread_count_aux; i++) { 
+          thread_infos[i]->has_to_wait = 1;                               // Indicates to the thread that has to wait.                            
+          thread_infos[i]->delay = thread_infos[thread_count_aux]->delay; // Stores the delay in the thread.
+      }
+    }
+    else if((int)thread_id_wait == thread_count_aux){ // Verify if this specific thread has to wait
+      thread_infos[thread_id_wait]->has_to_wait = 1;                                // Indicates to the thread that has to wait.
+      thread_infos[thread_id_wait]->delay = thread_infos[thread_count_aux]->delay;  // Stores the delay in the thread.
+    }
     
     // Creation of the Thread
     if (pthread_create(&threads[thread_count_aux], NULL, ems_process_command, (void *)thread_infos[thread_count_aux]) != 0) {

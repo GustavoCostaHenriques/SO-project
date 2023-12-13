@@ -24,6 +24,9 @@ struct ThreadInfo {
     size_t num_columns;             // COMMAND CREATE: Number of columns of the event that is being created.
     size_t num_coords;              // COMMAND RESERVE: Number of seats that are being reserved.
     struct Coord coord;             // COMMAND SHOW: Struct to store all the seats made in a reservation
+    int has_to_wait;                // COMMAND WAIT: Boolean to know if the thread has to wait.
+    unsigned int thread_id_wait;    // COMMAND WAIT: Integer to know which thread has to wait.
+    unsigned int delay;             // COMMAND WAIT: Integer to know how long the thread has to wait.
 };
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
