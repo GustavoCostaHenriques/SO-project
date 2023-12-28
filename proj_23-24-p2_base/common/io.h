@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 
 #include "constants.h"
@@ -28,13 +29,18 @@ enum {
 
 typedef struct {
     int session_id;
+
     int fd_req;
     int fd_resp;
+
     char opcode;
     bool to_execute;
+    bool client_was_used;
+
     pthread_t tid;
     pthread_mutex_t lock;
     pthread_cond_t cond;
+
     char req_client_pipe[PIPENAME_SIZE];
     char resp_client_pipe[PIPENAME_SIZE];
 } worker_client_t;

@@ -6,36 +6,58 @@ static int fd_server;
 static worker_client_t *clients;
 static char *server_pipe;
 static pthread_mutex_t server_pipe_lock;
-static bool server_is_lock = false;
+bool server_will_close = false;
+bool server_is_lock = false;
 
 void destroy_server(int status) {
 
-    close(fd_server);
-    if (unlink(server_pipe) != 0 && errno != ENOENT) {
-        fprintf(stdout, "ERROR %s\n", "Failed to delete pipe");
-        exit(EXIT_FAILURE);
-    }
-    for (int i = 0; i < MAX_SESSION_COUNT; i++) {
-
-      if (clients[i].to_execute) {
-        close(clients[i].fd_req);
-        close(clients[i].fd_resp);
-
-        fprintf(stdout, "\nPIPES OF CLIENT %d CLOSED BECAUSE SERVER WILL SHUTDOWN\n", clients[i].session_id);
-      }
-    }  
-    free(clients);
-    if(server_is_lock) {
-      if(pthread_mutex_unlock(&server_pipe_lock) != 0) {
-        exit(EXIT_FAILURE);
-      }
-    }
-    if (pthread_mutex_destroy(&server_pipe_lock) != 0) {
+  close(fd_server);
+  if (unlink(server_pipe) != 0 && errno != ENOENT) {
+      fprintf(stdout, "ERROR %s\n", "Failed to delete pipe");
       exit(EXIT_FAILURE);
-    } 
-    ems_terminate();
-    printf("\nSUCCESSFULLY ENDED THE SERVER.\n");
-    exit(status);
+  }
+  for (int i = 0; i < MAX_SESSION_COUNT; i++) {
+    pthread_mutex_lock(&clients[i].lock);
+
+    // Sinaliza para as threads que é hora de sair
+    clients[i].to_execute = true;
+    server_will_close = true;
+    pthread_cond_broadcast(&clients[i].cond);
+
+    pthread_mutex_unlock(&clients[i].lock);
+
+    if(pthread_cond_destroy(&clients[i].cond) != 0)
+      exit(EXIT_FAILURE);
+
+  }  
+  for (int i = 0; i < MAX_SESSION_COUNT; i++) {
+    if(pthread_join(clients[i].tid, NULL) != 0)
+      exit(EXIT_FAILURE);
+  }
+
+  // Agora, após as threads terminarem, você pode destruir os mutexes
+  for (int i = 0; i < MAX_SESSION_COUNT; i++) {
+    if(!clients[i].client_was_used) {
+      pthread_mutex_unlock(&clients[i].lock);
+    }
+
+    int k = pthread_mutex_destroy(&clients[i].lock);
+      //exit(EXIT_FAILURE);
+    printf("\n%d\n", k);
+  
+  }
+  free(clients);
+  if(server_is_lock) {
+    if(pthread_mutex_unlock(&server_pipe_lock) != 0) {
+      exit(EXIT_FAILURE);
+    }
+  }
+  if (pthread_mutex_destroy(&server_pipe_lock) != 0) {
+    exit(EXIT_FAILURE);
+  } 
+  ems_terminate();
+  printf("\nSUCCESSFULLY ENDED THE SERVER.\n");
+  exit(status);
 }
 
 static void sig_handler(int sig) {
@@ -122,6 +144,7 @@ void initialize_client(worker_client_t *client) {
   if(pthread_mutex_unlock(&client->lock) != 0) {
     destroy_server(EXIT_FAILURE);
   }
+
 }
 
 void create_event(int fd_req, int fd_resp, worker_client_t *client) {
@@ -262,7 +285,6 @@ void reserve_seats(int fd_req, int fd_resp, worker_client_t *client) {
   if(pthread_mutex_unlock(&client->lock) != 0) {
     destroy_server(EXIT_FAILURE);
   }
-
 }
 
 void show_event(int fd_req, int fd_resp, worker_client_t *client) {
@@ -293,7 +315,6 @@ void show_event(int fd_req, int fd_resp, worker_client_t *client) {
   if(pthread_mutex_unlock(&client->lock) != 0) {
     destroy_server(EXIT_FAILURE);
   }
-  
 }
 
 void list_events(worker_client_t *client) {
@@ -325,9 +346,11 @@ void close_client(worker_client_t *client) {
   if(pthread_mutex_unlock(&client->lock) != 0) {
     destroy_server(EXIT_FAILURE);
   }
+
 }
 
 void *handle_messages(void *args) {
+  
   worker_client_t *client =   (worker_client_t *)args;
   if(pthread_mutex_lock(&client->lock) != 0)
     return NULL;
@@ -340,9 +363,12 @@ void *handle_messages(void *args) {
       return NULL;
     }
   }
+  if(server_will_close)
+    return NULL;
   fprintf(stdout, "CLIENT %d IS NO LONGER WAITING\n", client->session_id);
 
   int client_ended = 0;
+  client->client_was_used = true;
   while (1) {
     switch (client->opcode)
     {
@@ -386,6 +412,7 @@ int init_server() {
   for (int i = 0; i < MAX_SESSION_COUNT; i++) {
     clients[i].session_id = i;
     clients[i].to_execute = false;
+    clients[i].client_was_used = false;
     if (pthread_mutex_init(&clients[i].lock, NULL) != 0) {
         return -1;
     }
@@ -403,40 +430,40 @@ int init_server() {
 }
 
 void function(int parser_fn(worker_client_t*), char op_code) {
-    int session_id = -1;
+
+  int session_id = -1;
+  while(session_id == -1) {
     for (int i = 0; i < MAX_SESSION_COUNT; i++) {
       if (!clients[i].to_execute) {
         session_id = i;
         break;
       }
     }
-    if (session_id < 0) {
-      fprintf(stdout, "ERROR %s\n", "No sessions left");
-    }
+  }
+  
+  worker_client_t *client = &clients[session_id];
+  
+  pthread_mutex_lock(&client->lock);
 
-    worker_client_t *client = &clients[session_id];
-    
-    pthread_mutex_lock(&client->lock);
-    
-    client->opcode = op_code;
-    int result = 0;
-    if (parser_fn != NULL) {
-        result = parser_fn(client);
+  client->opcode = op_code;
+  int result = 0;
+  if (parser_fn != NULL) {
+      result = parser_fn(client);
+  }
+  if (pthread_mutex_lock(&server_pipe_lock) != 0) {
+    destroy_server(EXIT_FAILURE);
+  }
+  server_is_lock = true;    
+  if (result == 0) {
+    client->to_execute = true;
+    fprintf(stdout, "CLIENT %d WILL START TO EXECUTE\n", client->session_id);
+    if (pthread_cond_signal(&client->cond) != 0) {
+      fprintf(stdout, "ERROR %s\n", "Couldn't signal client");
     }
-    if (pthread_mutex_lock(&server_pipe_lock) != 0) {
-      destroy_server(EXIT_FAILURE);
-    }
-    server_is_lock = true;    
-    if (result == 0) {
-      client->to_execute = true;
-      fprintf(stdout, "CLIENT %d WILL START TO EXECUTE\n", client->session_id);
-      if (pthread_cond_signal(&client->cond) != 0) {
-        fprintf(stdout, "ERROR %s\n", "Couldn't signal client");
-      }
-    } else {
-      fprintf(stdout, "ERROR %s\n", "Failed to execute client");
-    }
-    pthread_mutex_unlock(&client->lock);
+  } else {
+    fprintf(stdout, "ERROR %s\n", "Failed to execute client");
+  }
+  pthread_mutex_unlock(&client->lock);
 }
 
 int main(int argc, char* argv[]) {
