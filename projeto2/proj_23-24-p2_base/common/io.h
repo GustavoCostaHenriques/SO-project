@@ -10,16 +10,40 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdint.h>
+
 
 #include "constants.h"
 
 enum {
+    OP_CODE_CLIENT = '1',
     OP_CODE_QUIT = '2',
     OP_CODE_CREATE = '3',
     OP_CODE_RESERVE = '4',
     OP_CODE_SHOW = '5',
     OP_CODE_LIST = '6',
 };
+
+typedef struct {
+    int session_id;
+
+    int fd_req;
+    int fd_resp;
+
+    char opcode;
+    bool to_execute;
+    bool client_was_used;
+
+    pthread_t tid;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+
+    char req_client_pipe[PIPENAME_SIZE];
+    char resp_client_pipe[PIPENAME_SIZE];
+} worker_client_t;
 
 /// Parses an unsigned integer from the given file descriptor.
 /// @param fd The file descriptor to read from.

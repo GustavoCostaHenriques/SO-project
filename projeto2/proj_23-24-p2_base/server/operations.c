@@ -161,13 +161,14 @@ int ems_reserve(unsigned int event_id, size_t num_seats, size_t* xs, size_t* ys)
 
   for (size_t i = 0; i < num_seats; i++) {
     event->data[seat_index(event, xs[i], ys[i])] = reservation_id;
+    printf("SEAT (%ld, %ld) RESERVED\n", xs[i], ys[i]);
   }
 
   pthread_mutex_unlock(&event->mutex);
   return 0;
 }
 
-int ems_show(size_t num_rows, size_t num_cols, unsigned int *seats, unsigned int event_id) {
+int ems_show(int fd_resp, unsigned int event_id) {
   if (event_list == NULL) {
     fprintf(stderr, "EMS state must be initialized\n");
     return 1;
@@ -183,92 +184,92 @@ int ems_show(size_t num_rows, size_t num_cols, unsigned int *seats, unsigned int
   pthread_rwlock_unlock(&event_list->rwl);
 
   if (event == NULL) {
-    fprintf(stderr, "Event not found\n");
+    int success = 1;
+    printf("SUCCESS: %d\n", success);
+    ssize_t ret = write(fd_resp, &success, sizeof(int));
+    if (ret < 0) {
+      fprintf(stdout, "ERR: write failed\n");
+      return 1;
+    }
+    printf("WROTE success\n");
+
+    ret = write(fd_resp, "Event not found\n", strlen("Event not found\n"));
+    if (ret < 0) {
+      fprintf(stdout, "ERR: write failed\n");
+      return 1;
+    }
+    printf("WROTE event not found\n");
     return 1;
   }
 
   if (pthread_mutex_lock(&event->mutex) != 0) {
     fprintf(stderr, "Error locking mutex\n");
-    return 1;
   }
 
-  num_rows = event->rows;
-  num_cols = event->cols;
-  printf("ROWS: %ld COLS: %ld\n", num_rows, num_cols);
+  printf("ROWS: %ld COLS: %ld\n", event->rows, event->cols);
 
-  seats = malloc(sizeof(unsigned int) * (num_rows*num_cols));
+  unsigned int *seats = malloc(sizeof(unsigned int) * (event->rows*event->cols));
 
   if (seats == NULL) {
     fprintf(stdout, "ERR: failed to allocate memory\n");
-    exit(EXIT_FAILURE);
+    free(seats);
+    pthread_mutex_unlock(&event->mutex);
+    return 1;
   }
-
+  int aux = 0;
   for (size_t i = 1; i <= event->rows; i++) {
-    for (size_t j = 1; j <= event->cols; j++) {
-        seats[i*j] = event->data[seat_index(event, i, j)];
+    for (size_t j = 1; j <= event->cols; j++) {  
+      seats[aux] = event->data[seat_index(event, i, j)];
+      aux++;
     }
   }
+
+  int success = 0;
+  printf("SUCCESS: %d\n", success);
+  ssize_t ret = write(fd_resp, &success, sizeof(int));
+  if (ret < 0) {
+    fprintf(stdout, "ERR: write failed\n");
+    free(seats);
+    pthread_mutex_unlock(&event->mutex);
+    return 1;
+  }
+  printf("WROTE success\n");
+
+  printf("NUM_ROWS: %ld\n", event->rows);
+  ret = write(fd_resp, &event->rows, sizeof(size_t));
+  if (ret < 0) {
+    fprintf(stdout, "ERR: write failed\n");
+    free(seats);
+    pthread_mutex_unlock(&event->mutex);
+    return 1;
+  }
+  printf("WROTE num_rows\n");
+
+  printf("NUM_COLS: %ld\n", event->cols);
+  ret = write(fd_resp, &event->cols, sizeof(size_t));
+  if (ret < 0) {
+    fprintf(stdout, "ERR: write failed\n");
+    free(seats);
+    pthread_mutex_unlock(&event->mutex);
+    return 1;
+  }
+  printf("WROTE num_cols\n");
+
+  ret = write(fd_resp, seats, sizeof(unsigned int[event->rows*event->cols]));
+  if (ret < 0) {
+    fprintf(stdout, "ERR: write failed\n");
+    free(seats);
+    pthread_mutex_unlock(&event->mutex);
+    return 1;
+  }
+  printf("WROTE seats\n");
+  free(seats);
   pthread_mutex_unlock(&event->mutex);
   return 0;
 }
 
-/* int ems_show(int out_fd, unsigned int event_id) {
-  if (event_list == NULL) {
-    fprintf(stderr, "EMS state must be initialized\n");
-    return 1;
-  }
+int ems_list_events(int fd_resp, int fd_req, worker_client_t *client) {
 
-  if (pthread_rwlock_rdlock(&event_list->rwl) != 0) {
-    fprintf(stderr, "Error locking list rwl\n");
-    return 1;
-  }
-
-  struct Event* event = get_event_with_delay(event_id, event_list->head, event_list->tail);
-
-  pthread_rwlock_unlock(&event_list->rwl);
-
-  if (event == NULL) {
-    fprintf(stderr, "Event not found\n");
-    return 1;
-  }
-
-  if (pthread_mutex_lock(&event->mutex) != 0) {
-    fprintf(stderr, "Error locking mutex\n");
-    return 1;
-  }
-
-  for (size_t i = 1; i <= event->rows; i++) {
-    for (size_t j = 1; j <= event->cols; j++) {
-      char buffer[16];
-      sprintf(buffer, "%u", event->data[seat_index(event, i, j)]);
-
-      if (print_str(out_fd, buffer)) {
-        perror("Error writing to file descriptor");
-        pthread_mutex_unlock(&event->mutex);
-        return 1;
-      }
-
-      if (j < event->cols) {
-        if (print_str(out_fd, " ")) {
-          perror("Error writing to file descriptor");
-          pthread_mutex_unlock(&event->mutex);
-          return 1;
-        }
-      }
-    }
-
-    if (print_str(out_fd, "\n")) {
-      perror("Error writing to file descriptor");
-      pthread_mutex_unlock(&event->mutex);
-      return 1;
-    }
-  }
-
-  pthread_mutex_unlock(&event->mutex);
-  return 0;
-} */
-
-int ems_list_events(int out_fd) {
   if (event_list == NULL) {
     fprintf(stderr, "EMS state must be initialized\n");
     return 1;
@@ -283,40 +284,80 @@ int ems_list_events(int out_fd) {
   struct ListNode* current = event_list->head;
 
   if (current == NULL) {
-    char buff[] = "No events\n";
-    if (print_str(out_fd, buff)) {
-      perror("Error writing to file descriptor");
+    int success = 1;
+    printf("SUCCESS: %d\n", success);
+    ssize_t ret = write(fd_resp, &success, sizeof(int));
+    if (ret < 0) {
+      fprintf(stdout, "ERR: write failed\n");
       pthread_rwlock_unlock(&event_list->rwl);
       return 1;
     }
+    printf("WROTE success\n");
 
+    ret = write(fd_resp, "No events\n", strlen("No events\n"));
+    if (ret < 0) {
+      fprintf(stdout, "ERR: write failed\n");
+      pthread_rwlock_unlock(&event_list->rwl);
+      return 1;
+    }
+    printf("WROTE No events\n");
     pthread_rwlock_unlock(&event_list->rwl);
-    return 0;
+    return 1;
+
   }
 
+  size_t num_events = 0;
   while (1) {
-    char buff[] = "Event: ";
-    if (print_str(out_fd, buff)) {
-      perror("Error writing to file descriptor");
-      pthread_rwlock_unlock(&event_list->rwl);
-      return 1;
-    }
-
-    char id[16];
-    sprintf(id, "%u\n", (current->event)->id);
-    if (print_str(out_fd, id)) {
-      perror("Error writing to file descriptor");
-      pthread_rwlock_unlock(&event_list->rwl);
-      return 1;
-    }
-
+    num_events++;
     if (current == to) {
       break;
     }
-
     current = current->next;
   }
 
+  current = event_list->head;
+
+  unsigned int ids[num_events];
+  for(size_t i = 0; i < num_events; i++) {
+    ids[i] = (current->event)->id;
+    current = current->next;
+  }
+
+  int success = 0;
+  printf("SUCCESS: %d\n", success);
+  ssize_t ret = write(fd_resp, &success, sizeof(int));
+  if (ret < 0) {
+    fprintf(stdout, "ERR: write failed\n");
+    pthread_rwlock_unlock(&event_list->rwl);
+    return 1;
+  }
+  printf("WROTE success\n");
+
+  ret = write(fd_resp, &num_events, sizeof(size_t));
+  if (ret < 0) {
+    fprintf(stdout, "ERR: write failed\n");
+    pthread_rwlock_unlock(&event_list->rwl);
+    return 1;
+  }
+  printf("WROTE num_events\n");
+
+  ret = write(fd_resp, ids, sizeof(unsigned int[num_events]));
+  if (ret < 0) {
+    fprintf(stdout, "ERR: write failed\n");
+    pthread_rwlock_unlock(&event_list->rwl);
+    return 1;
+  }
+  printf("WROTE ids\n");
+
+  char op_code;
+  ret = read(fd_req, &op_code, sizeof(char));
+  if (ret < 0) {
+    fprintf(stdout, "ERR: read failed\n");
+    exit(EXIT_FAILURE);
+  }
+  client->opcode = op_code;
+
   pthread_rwlock_unlock(&event_list->rwl);
+
   return 0;
 }
