@@ -39,4 +39,6 @@ int ems_show(int fd_resp, unsigned int event_id);
 /// @return 0 if the events were printed successfully, 1 otherwise.
 int ems_list_events(int out_fd, int fd_server, worker_client_t *client);
 
+void print_events();
+
 #endif  // SERVER_OPERATIONS_H

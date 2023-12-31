@@ -3,66 +3,18 @@
 #include "operations.h"
 
 static int fd_server;
+
 static worker_client_t *clients;
 static char *server_pipe;
 static pthread_mutex_t server_pipe_lock;
-bool server_will_close = false;
-bool server_is_lock = false;
+static pthread_mutex_t free_client_lock;
+static pthread_cond_t cond_to_wait;
 
-void destroy_server(int status) {
-
-  close(fd_server);
-  if (unlink(server_pipe) != 0 && errno != ENOENT) {
-      fprintf(stdout, "ERROR %s\n", "Failed to delete pipe");
-      exit(EXIT_FAILURE);
-  }
-  for (int i = 0; i < MAX_SESSION_COUNT; i++) {
-    pthread_mutex_lock(&clients[i].lock);
-
-    // Sinaliza para as threads que é hora de sair
-    clients[i].to_execute = true;
-    server_will_close = true;
-    pthread_cond_broadcast(&clients[i].cond);
-
-    pthread_mutex_unlock(&clients[i].lock);
-
-    if(pthread_cond_destroy(&clients[i].cond) != 0)
-      exit(EXIT_FAILURE);
-
-  }  
-  for (int i = 0; i < MAX_SESSION_COUNT; i++) {
-    if(pthread_join(clients[i].tid, NULL) != 0)
-      exit(EXIT_FAILURE);
-  }
-
-  // Agora, após as threads terminarem, você pode destruir os mutexes
-  for (int i = 0; i < MAX_SESSION_COUNT; i++) {
-    if(!clients[i].client_was_used) {
-      pthread_mutex_unlock(&clients[i].lock);
-    }
-
-    int k = pthread_mutex_destroy(&clients[i].lock);
-      //exit(EXIT_FAILURE);
-    printf("\n%d\n", k);
-  
-  }
-  free(clients);
-  if(server_is_lock) {
-    if(pthread_mutex_unlock(&server_pipe_lock) != 0) {
-      exit(EXIT_FAILURE);
-    }
-  }
-  if (pthread_mutex_destroy(&server_pipe_lock) != 0) {
-    exit(EXIT_FAILURE);
-  } 
-  ems_terminate();
-  printf("\nSUCCESSFULLY ENDED THE SERVER.\n");
-  exit(status);
-}
+bool all_clients_are_busy = false;
 
 static void sig_handler(int sig) {
-  if (sig == SIGINT) {
-    destroy_server(EXIT_SUCCESS);
+  if (sig == SIGUSR1) {
+    print_events();
   }
 }
 
@@ -81,9 +33,6 @@ void initialize_client(worker_client_t *client) {
     exit(EXIT_FAILURE);
   }
 
-  printf("REQ CLIENT PIPE: %s\n", client->req_client_pipe);
-  printf("RESP CLIENT PIPE: %s\n", client->resp_client_pipe);
-
   close(fd_server);
   // Open response client pipe for reading
   // This waits for someone to open it for writing
@@ -92,7 +41,6 @@ void initialize_client(worker_client_t *client) {
     fprintf(stderr, "[ERR]: open failed: %s\n", strerror(errno));
     exit(EXIT_FAILURE);
   }
-  printf("SERVER PIPE WAITING TO WRITE\n");
   
   ret = write(fd_server, &client->session_id, sizeof(int));
   if (ret < 0) {
@@ -102,47 +50,50 @@ void initialize_client(worker_client_t *client) {
   }
   close(fd_server);
 
-  if (pthread_mutex_unlock(&server_pipe_lock) != 0) {
-    destroy_server(EXIT_FAILURE);
-  }
-  server_is_lock = false;
-
   if(pthread_mutex_unlock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 
   if(pthread_mutex_lock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 
   // Open request client pipe for reading
   // This waits for someone to open it for writing
-  client->fd_req = open(client->req_client_pipe, O_RDONLY);
+  do{
+    client->fd_req = open(client->req_client_pipe, O_RDONLY);
+  } while (client->fd_req == -1);
   if (client->fd_req == -1) {
-    fprintf(stderr, "[ERR]: 1->open failed: %s\n", strerror(errno));
-    exit(EXIT_FAILURE);
+    fprintf(stderr, "[ERR]: open failed: %s\n", strerror(errno));
+    client->opcode = 2;
   }
-  printf("REQUEST CLIENT PIPE WAITING TO READ\n");
 
   // Open response client pipe for reading
   // This waits for someone to open it for writing
-  client->fd_resp = open(client->resp_client_pipe, O_WRONLY);
+  do {
+    client->fd_resp = open(client->resp_client_pipe, O_WRONLY);
+  } while(client->fd_resp == -1);
   if (client->fd_resp == -1) {
     fprintf(stderr, "[ERR]: open failed: %s\n", strerror(errno));
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  printf("RESPONSE CLIENT PIPE WAITING TO WRITE\n");
 
   char op_code;
   ret = read(client->fd_req, &op_code, sizeof(char));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  client->opcode = op_code;
+  else
+    client->opcode = op_code;
+
 
   if(pthread_mutex_unlock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
+  }
+
+  if (pthread_mutex_unlock(&server_pipe_lock) != 0) {
+    exit(EXIT_FAILURE);
   }
 
 }
@@ -153,50 +104,44 @@ void create_event(int fd_req, int fd_resp, worker_client_t *client) {
   size_t num_cols;
 
   if(pthread_mutex_lock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
   ssize_t ret = read(fd_req, &event_id, sizeof(unsigned int));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  fprintf(stdout, "[INFO]: received %zd B\n", ret);
-  fprintf(stdout, "Received event_id: %u\n", event_id);
 
   ret = read(fd_req, &num_rows, sizeof(size_t));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  fprintf(stdout, "[INFO]: received %zd B\n", ret);
-  fprintf(stdout, "Received num_rows: %lu\n", num_rows);
 
   ret = read(fd_req, &num_cols, sizeof(size_t));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  fprintf(stdout, "[INFO]: received %zd B\n", ret);
-  fprintf(stdout, "Received num_cols: %lu\n", num_cols);
 
   int success = ems_create(event_id, num_rows, num_cols);
-  printf("SUCCESS: %d\n", success);
   ret = write(fd_resp, &success, sizeof(int));
   if (ret < 0) {
     fprintf(stdout, "ERR: write failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
 
   char op_code;
   ret = read(fd_req, &op_code, sizeof(char));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  client->opcode = op_code;
+  else
+    client->opcode = op_code;
 
   if(pthread_mutex_unlock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 }
 
@@ -205,48 +150,40 @@ void reserve_seats(int fd_req, int fd_resp, worker_client_t *client) {
   size_t num_seats;
 
   if(pthread_mutex_lock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 
   ssize_t ret = read(fd_req, &event_id, sizeof(unsigned int));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  fprintf(stdout, "[INFO]: received %zd B\n", ret);
-  fprintf(stdout, "Received event_id: %u\n", event_id);
 
   ret = read(fd_req, &num_seats, sizeof(size_t));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  fprintf(stdout, "[INFO]: received %zd B\n", ret);
-  fprintf(stdout, "Received num_seats: %lu\n", num_seats);
 
   size_t* xs = malloc(sizeof(size_t) * num_seats);
 
   if (xs == NULL) {
     fprintf(stdout, "ERR: failed to allocate memory\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
 
   ret = read(fd_req, xs, sizeof(size_t[num_seats]));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
     free(xs);
-    exit(EXIT_FAILURE);
-  }
-  fprintf(stdout, "[INFO]: received %zd B\n", ret);
-  for(size_t i = 0; i < num_seats; i++) {
-    fprintf(stdout, "Received xs coordenate: %lu\n", xs[i]);
+    client->opcode = 2;
   }
 
   size_t* ys = malloc(sizeof(size_t) * num_seats);
 
   if (ys == NULL) {
     fprintf(stdout, "ERR: failed to allocate memory\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
 
   ret = read(fd_req, ys, sizeof(size_t[num_seats]));
@@ -254,21 +191,16 @@ void reserve_seats(int fd_req, int fd_resp, worker_client_t *client) {
     fprintf(stdout, "ERR: read failed\n");
     free(xs);
     free(ys);
-    exit(EXIT_FAILURE);
-  }
-  fprintf(stdout, "[INFO]: received %zd B\n", ret);
-  for(size_t i = 0; i < num_seats; i++) {
-    fprintf(stdout, "Received ys coordenate: %lu\n", ys[i]);
+    client->opcode = 2;
   }
 
   int success = ems_reserve(event_id, num_seats, xs, ys);
-  printf("SUCCESS: %d\n", success);
   ret = write(fd_resp, &success, sizeof(int));
   if (ret < 0) {
     fprintf(stdout, "ERR: write failed\n");
     free(xs);
     free(ys);
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
 
   free(ys);
@@ -278,12 +210,13 @@ void reserve_seats(int fd_req, int fd_resp, worker_client_t *client) {
   ret = read(fd_req, &op_code, sizeof(char));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  client->opcode = op_code;
+  else
+    client->opcode = op_code;
 
   if(pthread_mutex_unlock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 }
 
@@ -291,16 +224,14 @@ void show_event(int fd_req, int fd_resp, worker_client_t *client) {
   unsigned int event_id;
 
   if(pthread_mutex_lock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 
   ssize_t ret = read(fd_req, &event_id, sizeof(unsigned int));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  fprintf(stdout, "[INFO]: received %zd B\n", ret);
-  fprintf(stdout, "Received event_id: %u\n", event_id);
 
   ems_show(fd_resp, event_id);
 
@@ -308,26 +239,27 @@ void show_event(int fd_req, int fd_resp, worker_client_t *client) {
   ret = read(fd_req, &op_code, sizeof(char));
   if (ret < 0) {
     fprintf(stdout, "ERR: read failed\n");
-    exit(EXIT_FAILURE);
+    client->opcode = 2;
   }
-  client->opcode = op_code;
+  else
+    client->opcode = op_code;
 
   if(pthread_mutex_unlock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 }
 
 void list_events(worker_client_t *client) {
 
   if(pthread_mutex_lock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 
   ems_list_events(client->fd_resp, client->fd_req, client);
   
 
   if(pthread_mutex_unlock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 
 }
@@ -335,16 +267,14 @@ void list_events(worker_client_t *client) {
 void close_client(worker_client_t *client) {
 
   if(pthread_mutex_lock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 
   close(client->fd_req);
-  printf("CLOSE REQUEST CLIENT PIPE\n");
   close(client->fd_resp);
-  printf("CLOSE RESPONSE CLIENT PIPE\n");
 
   if(pthread_mutex_unlock(&client->lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
 
 }
@@ -352,20 +282,29 @@ void close_client(worker_client_t *client) {
 void *handle_messages(void *args) {
   
   worker_client_t *client =   (worker_client_t *)args;
+
+  if(client->client_was_used) {
+    if(pthread_mutex_unlock(&client->lock) != 0)
+      return NULL;
+  }
+
   if(pthread_mutex_lock(&client->lock) != 0)
     return NULL;
 
-  fprintf(stdout, "CLIENT %d WAITING TO EXECUTE\n", client->session_id);
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGUSR1);
+  if(pthread_sigmask(SIG_BLOCK, &mask, NULL) != 0) {
+    fprintf(stdout, "ERROR %s\n", "Failed to mask thread");
+    return NULL;
+  }
+
   while (!client->to_execute) {
-    fprintf(stdout, "CLIENT %d HAS FALSE IN EXECUTE\n", client->session_id);
     if (pthread_cond_wait(&client->cond, &client->lock) != 0) {
       fprintf(stdout, "ERROR %s\n", "Failed to wait for condition variable");
       return NULL;
     }
   }
-  if(server_will_close)
-    return NULL;
-  fprintf(stdout, "CLIENT %d IS NO LONGER WAITING\n", client->session_id);
 
   int client_ended = 0;
   client->client_was_used = true;
@@ -398,16 +337,39 @@ void *handle_messages(void *args) {
     if(client_ended)break; 
   }
   client->to_execute = false;
+
+  if(all_clients_are_busy) {
+    if (pthread_mutex_lock(&free_client_lock) != 0) {
+      return NULL;
+    } 
+
+    all_clients_are_busy = false;
+    if (pthread_cond_broadcast(&cond_to_wait) != 0) {
+      fprintf(stdout, "ERROR %s\n", "Couldn't signal client");
+      return NULL;
+    }
+
+    if (pthread_mutex_unlock(&free_client_lock) != 0) {
+      return NULL;
+    }
+
+  }
+
+  handle_messages((void *)&clients[client->session_id]);
   if (pthread_mutex_unlock(&client->lock) != 0) {
     return NULL;
   }
-  fprintf(stdout, "GOT OUT OF CLIENT\n");
-  handle_messages((void *)&clients[client->session_id]);
+
   return 0;
 }
 
 int init_server() {
   clients = malloc(sizeof(worker_client_t)*MAX_SESSION_COUNT);
+
+  struct sigaction sa_sigusr1;
+  memset(&sa_sigusr1, 0, sizeof(sa_sigusr1));
+  sa_sigusr1.sa_handler = sig_handler;
+  sigaction(SIGUSR1, &sa_sigusr1, NULL);
   
   for (int i = 0; i < MAX_SESSION_COUNT; i++) {
     clients[i].session_id = i;
@@ -426,18 +388,43 @@ int init_server() {
   if (pthread_mutex_init(&server_pipe_lock, NULL) != 0) {
     return -1;
   }
+  if (pthread_mutex_init(&free_client_lock, NULL) != 0) {
+    return -1;
+  }
+  if (pthread_cond_init(&cond_to_wait, NULL) != 0) {
+    return -1;
+  }
   return 0;
 }
 
 void function(int parser_fn(worker_client_t*), char op_code) {
 
   int session_id = -1;
-  while(session_id == -1) {
+  for (int i = 0; i < MAX_SESSION_COUNT; i++) {
+    if (!clients[i].to_execute) {
+      session_id = i;
+      break;
+    }
+  }
+  if(session_id < 0) {
+    if (pthread_mutex_lock(&free_client_lock) != 0) {
+      exit(EXIT_FAILURE);
+    }
+    all_clients_are_busy = true;
+    while(all_clients_are_busy) {
+      if (pthread_cond_wait(&cond_to_wait, &free_client_lock) != 0) {
+        fprintf(stdout, "ERROR %s\n", "Failed to wait for condition variable");
+        exit(EXIT_FAILURE);
+      }
+    }
     for (int i = 0; i < MAX_SESSION_COUNT; i++) {
-      if (!clients[i].to_execute) {
+    if (!clients[i].to_execute) {
         session_id = i;
         break;
       }
+    }
+    if (pthread_mutex_unlock(&free_client_lock) != 0) {
+      exit(EXIT_FAILURE);
     }
   }
   
@@ -450,18 +437,20 @@ void function(int parser_fn(worker_client_t*), char op_code) {
   if (parser_fn != NULL) {
       result = parser_fn(client);
   }
+  
   if (pthread_mutex_lock(&server_pipe_lock) != 0) {
-    destroy_server(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
   }
-  server_is_lock = true;    
+
   if (result == 0) {
     client->to_execute = true;
-    fprintf(stdout, "CLIENT %d WILL START TO EXECUTE\n", client->session_id);
     if (pthread_cond_signal(&client->cond) != 0) {
       fprintf(stdout, "ERROR %s\n", "Couldn't signal client");
+      exit(EXIT_FAILURE);
     }
   } else {
     fprintf(stdout, "ERROR %s\n", "Failed to execute client");
+    exit(EXIT_FAILURE);
   }
   pthread_mutex_unlock(&client->lock);
 }
@@ -494,7 +483,6 @@ int main(int argc, char* argv[]) {
     fprintf(stdout, "ERROR %s\n", "Failed to init server\n");
     return 1;
   }
-  fprintf(stdout, "INITIALIZATION OF ALL CLIENT WORKER THREADS SUCCESSFULL\n");
 
   //TODO: Intialize server, create worker threads
   server_pipe = argv[1];
@@ -510,9 +498,6 @@ int main(int argc, char* argv[]) {
     fprintf(stdout, "ERROR mkfifo failed for pipe %s\n", server_pipe);
     return 1;
   }
-  printf("SERVER PIPE CREATED\n");
-
-  signal(SIGINT, sig_handler);  
 
   char op_code;
   ssize_t ret;
@@ -520,60 +505,44 @@ int main(int argc, char* argv[]) {
 
     // Open server pipe for reading
     // This waits for someone to open it for writing
-    fd_server = open(server_pipe, O_RDONLY);
-    if (fd_server == -1) {
-      fprintf(stderr, "ERROR open failed: %s\n", strerror(errno));
-      return 1;
-    }
-    printf("SERVER PIPE WAITING TO READ\n");
+    do {
+      fd_server = open(server_pipe, O_RDONLY);
+    } while (fd_server == -1 && errno == EINTR);
 
     do {
       ret = read(fd_server, &op_code, sizeof(char));
     } while (ret < 0 && errno == EINTR);
 
-    fprintf(stdout, "[INFO]: received %zd\n", ret);
-    fprintf(stdout, "Received Message: OPCODE\n");
-
-
-
     while(ret > 0) {
       function(NULL, op_code);
-      fprintf(stdout, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n");
       if (pthread_mutex_lock(&server_pipe_lock) != 0) {
-        destroy_server(EXIT_FAILURE);
-      }
-      server_is_lock = true;
-      // Open server pipe for reading
-      // This waits for someone to open it for writing
-      fd_server = open(server_pipe, O_RDONLY);
-      if (fd_server == -1) {
-        fprintf(stderr, "ERROR open failed: %s\n", strerror(errno));
         return 1;
       }
-      printf("SERVER PIPE WAITING TO READ\n");      
+
+      // Open server pipe for reading
+      // This waits for someone to open it for writing
+      do {
+        fd_server = open(server_pipe, O_RDONLY);
+      } while (fd_server == -1 && errno == EINTR);
+      
       do {
         ret = read(fd_server, &op_code, sizeof(char));
       } while (ret < 0 && errno == EINTR);
-      fprintf(stdout, "[INFO]1: received %zd B\n", ret);
-      putchar(op_code);
-      fprintf(stdout, " <-Received OPCODE\n");
-
 
       if (pthread_mutex_unlock(&server_pipe_lock) != 0) {
-          destroy_server(EXIT_FAILURE);
+        return 1;
       }
-      server_is_lock = false;
     }
     if (ret < 0) {
       fprintf(stdout, "ERROR %s\n", "Failed to read pipe");
-      destroy_server(EXIT_FAILURE);
+      return 1;
     }
     
     if (close(fd_server) < 0) {
       fprintf(stdout, "ERROR failed to close pipe\n");
-      destroy_server(EXIT_FAILURE);
+      return 1;
     }
-  
+    
   }
 
   ems_terminate();

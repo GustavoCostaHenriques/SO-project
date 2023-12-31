@@ -14,6 +14,8 @@ int ems_setup(char const* req_pipe_path, char const* resp_pipe_path, char const*
 /// @return 0 in case of success, 1 otherwise.
 int ems_quit(void);
 
+int ems_destroy_client(void);
+
 /// Creates a new event with the given id and dimensions.
 /// @param event_id Id of the event to be created.
 /// @param num_rows Number of rows of the event to be created.

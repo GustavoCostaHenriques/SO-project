@@ -3,6 +3,17 @@
 #include "common/io.h"
 #include "parser.h"
 
+int in_fd;
+int out_fd;
+
+static void sig_handler(int sig) {
+  if (sig == SIGINT) {
+    close(in_fd);
+    close(out_fd);
+    ems_destroy_client();
+  }
+}
+
 int main(int argc, char* argv[]) {
   if (argc < 5) {
     fprintf(stderr, "Usage: %s <request pipe path> <response pipe path> <server pipe path> <.jobs file path>\n",
@@ -26,17 +37,19 @@ int main(int argc, char* argv[]) {
   strcpy(out_path, argv[4]);
   strcpy(strrchr(out_path, '.'), ".out");
 
-  int in_fd = open(argv[4], O_RDONLY);
+  in_fd = open(argv[4], O_RDONLY);
   if (in_fd == -1) {
     fprintf(stderr, "Failed to open input file. Path: %s\n", argv[4]);
     return 1;
   }
 
-  int out_fd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+  out_fd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
   if (out_fd == -1) {
     fprintf(stderr, "Failed to open output file. Path: %s\n", out_path);
     return 1;
   }
+
+  signal(SIGINT, sig_handler);
 
   while (1) {
     unsigned int event_id;
